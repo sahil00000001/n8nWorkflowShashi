@@ -1,6 +1,22 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import {
+  getCategories,
+  extractRole,
+  cleanName,
+  CATEGORY_LIST,
+  CAT_COLORS,
+} from "./lib/parsers.js";
+import { buildWorkflow } from "./lib/workflow.js";
+import {
+  loadHistory,
+  saveHistory,
+  clearAllHistory,
+  loadProfile,
+  saveProfile,
+  buildEmailIndex,
+} from "./lib/storage.js";
+import { exportHistoryToExcel, exportEntriesToExcel } from "./lib/excel.js";
 
-const STORAGE_KEY = "job_mailer_sent_emails";
 const BATCH_SIZE = 400;
 
 const DEFAULT_PROFILE = {
@@ -18,277 +34,6 @@ const DEFAULT_PROFILE = {
   jobType: "fresher",
 };
 
-const CAT_COLORS = {
-  finance: "#1D9E75",
-  analyst: "#378ADD",
-  hr: "#D4537E",
-  operations: "#BA7517",
-  marketing: "#7F77DD",
-  sales: "#D85A30",
-  content: "#5DCAA5",
-  management: "#888780",
-};
-
-function sanitize(s) {
-  return (s || "")
-    .replace(/[\uD800-\uDFFF]/g, "")
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/\n|\r/g, " ")
-    .trim();
-}
-
-function getCategories(postText) {
-  const t = (postText || "").toLowerCase();
-  const cats = [];
-  if (/finance|accounts|accountant|gst|taxation|invoice|tally|financial|cfo/.test(t)) cats.push("finance");
-  if (/business analyst|business analysis|mis\b|data analyst|analytics|market research/.test(t)) cats.push("analyst");
-  if (/\boperations\b|ops |supply chain|logistics|procurement/.test(t)) cats.push("operations");
-  if (/marketing|digital marketing|social media|content market|growth\b|seo\b|campaign/.test(t)) cats.push("marketing");
-  if (/\bhr\b|human resource|recruiter|talent|people ops|hrbp|payroll|onboarding|recruitment/.test(t)) cats.push("hr");
-  if (/content writ|content creat|copywrite|copywriting|\bblog\b|writing|editor/.test(t)) cats.push("content");
-  if (/management trainee|mt program|bba|mba|trainee|fresher|graduate|campus/.test(t)) cats.push("management");
-  if (/\bsales\b|business develop|\bbd\b|client|account manager|\bcrm\b/.test(t)) cats.push("sales");
-  return cats.length ? cats : ["management"];
-}
-
-function extractRole(postText) {
-  const lines = (postText || "").split("\n").map((l) => l.trim()).filter(Boolean);
-  for (const line of lines.slice(0, 6)) {
-    const clean = line
-      .replace(/[^\w\s\-\/\(\)&,\.#+]/g, "")
-      .trim()
-      .replace(/^(we.re hiring|we are hiring|urgent hiring|hiring alert|hiring|join us|alert)[:\-|!\s]*/i, "")
-      .trim()
-      .replace(/#\w+/g, "")
-      .trim()
-      .replace(/\s+/g, " ");
-    if (clean.length > 5 && clean.length < 80) return clean;
-  }
-  return "Business & Finance Opportunity";
-}
-
-function cleanName(name) {
-  return (
-    (name || "")
-      .replace(/premium profile|\b2nd\b|\b3rd\+\b|• 2nd|• 3rd\+|, hiring|hiring manager/gi, "")
-      .trim()
-      .replace(/^[,.\s]+|[,.\s]+$/g, "") || "Hiring Manager"
-  );
-}
-
-function generateWorkflowCode(profile, entries) {
-  const jsArr =
-    "[\n" +
-    entries
-      .map(
-        (e) =>
-          `  {email:'${sanitize(e.email)}',recruiter:'${sanitize(e.recruiter)}',role:'${sanitize(
-            e.role
-          )}',categories:${JSON.stringify(e.categories)}}`
-      )
-      .join(",\n") +
-    "\n]";
-  const isFresher = profile.jobType === "fresher";
-
-  return `const YOUR_NAME="${sanitize(profile.name)}";
-const YOUR_EMAIL="${sanitize(profile.email)}";
-const YOUR_PHONE="${sanitize(profile.phone)}";
-const YOUR_LINKEDIN="${sanitize(profile.linkedin)}";
-const YOUR_LOCATION="${sanitize(profile.location)}";
-const RESUME_LINK="${sanitize(profile.resumeLink)}";
-const GRAD_YEAR="${sanitize(profile.gradYear)}";
-const DEGREE="${sanitize(profile.degree)}";
-const COLLEGE="${sanitize(profile.college)}";
-const EXP="${sanitize(profile.experience)}";
-const IS_FRESHER=${isFresher};
-const jobListings=${jsArr};
-
-function getCertBlock(c){
-  const finance=["GST Filing & Taxation — Valeur Fabtex Pvt Ltd","Financial Modelling & MIS Reporting — Internship"];
-  const business=["Tata GenAI-Powered Data Analytics — Forage, 2025","AWS Cloud Practitioner Essentials — AWS, 2025"];
-  const awards=["Best Presenter Award (2026) — Research Presentation","1st Prize — Best Out of Waste, Razmaataz"];
-  const tools=["Microsoft Excel (Advanced) — Dashboards & Reporting","Google Workspace Suite — Docs, Sheets, Slides"];
-  let o;
-  if(c.includes("finance")) o=[...finance,...tools,...business,...awards];
-  else if(c.includes("analyst")) o=[...business,...finance,...tools,...awards];
-  else if(c.includes("marketing")||c.includes("content")) o=[...awards,...tools,...business,...finance];
-  else o=[...awards,...finance,...tools,...business];
-  return o.map((cert,i)=>\`\${i+1}. \${cert}\`).join("\\n");
-}
-
-function getSkillBlock(c){
-  const b=[];
-  b.push(["Finance & Accounting","Financial Modelling, MIS Reporting, Variance Analysis, GST Filing, Invoice Processing, Accounts Reconciliation."]);
-  b.push(["Business Analysis","Market Research, SWOT/SWOC Analysis, KPI Tracking, Competitive Intelligence, Data Interpretation."]);
-  if(c.includes("analyst")||c.includes("operations")) b.push(["Operations & Process","SOP Development, Process Optimisation, Project Documentation, Cross-functional Collaboration."]);
-  if(c.includes("marketing")||c.includes("content")) b.push(["Content & Communication","SEO-optimised writing, Report Drafting, Persuasive Copywriting, Audience Engagement."]);
-  if(c.includes("hr")||c.includes("management")||c.includes("sales")) b.push(["Stakeholder Management","Client Interaction, Team Coordination, Strategic Planning, Presentation Design."]);
-  if(c.includes("finance")) b.push(["Taxation & Compliance","GST Filing, Invoice Preparation, Compliance Workflows, Statutory Reporting."]);
-  b.push(["Tools","Microsoft Excel (Advanced), PowerPoint, Word, Google Sheets, Docs, Slides."]);
-  return b.map(([sk,desc])=>\`\${sk}\\n\${desc}\`).join("\\n\\n");
-}
-
-function genSubject(j){
-  const r=j.role.replace(/[^\\w\\s\\-\\/\\(\\)\\.&\\+]/g,'').trim().replace(/\\s+/g,' ');
-  const c=j.categories;
-  const tag=IS_FRESHER?\`\${DEGREE} '\${GRAD_YEAR.slice(-2)}\`:\`\${EXP} YOE\`;
-  if(c.includes("finance")&&c.includes("analyst")) return \`Application: \${r} | \${YOUR_NAME} — Finance & Business Analysis | \${tag} | Available Now\`;
-  if(c.includes("finance")) return \`Application: \${r} | \${YOUR_NAME} — Finance & Accounts | GST · MIS · Modelling | \${tag}\`;
-  if(c.includes("analyst")) return \`Application: \${r} | \${YOUR_NAME} — Business Analyst | Research · KPI · Reporting | \${tag}\`;
-  if(c.includes("hr")) return \`Application: \${r} | \${YOUR_NAME} — HR & Talent Ops | Best Presenter '26 | \${tag}\`;
-  if(c.includes("operations")) return \`Application: \${r} | \${YOUR_NAME} — Operations & Strategy | Process Optimisation | \${tag}\`;
-  if(c.includes("marketing")) return \`Application: \${r} | \${YOUR_NAME} — Marketing & Research | Content · Brand | \${tag}\`;
-  if(c.includes("sales")) return \`Application: \${r} | \${YOUR_NAME} — Sales & BD | Communication · CRM | \${tag}\`;
-  if(c.includes("content")) return \`Application: \${r} | \${YOUR_NAME} — Content & Communication | Writing · Research | \${tag}\`;
-  return \`Application: \${r} | \${YOUR_NAME} — Management Trainee | \${tag} | Best Presenter Award | Available Now\`;
-}
-
-function getRD(c){
-  if(c.includes("finance")&&c.includes("analyst")) return "Finance & Business Analyst";
-  if(c.includes("finance")) return "Finance & Accounts Executive";
-  if(c.includes("analyst")) return "Business Analyst";
-  if(c.includes("hr")) return "HR & Talent Operations";
-  if(c.includes("operations")) return "Operations & Strategy Associate";
-  if(c.includes("marketing")) return "Marketing & Research Associate";
-  if(c.includes("sales")) return "Sales & Business Development";
-  if(c.includes("content")) return "Content & Communication Specialist";
-  return "Management Trainee / Business Graduate";
-}
-
-function genBody(j){
-  const rf=j.recruiter.split(' ')[0];
-  const g=(rf&&rf!=="Hiring"&&rf!=="Manager"&&rf.length>1)?\`Dear \${rf},\`:"Dear Hiring Manager,";
-  const sk=getSkillBlock(j.categories);
-  const ct=getCertBlock(j.categories);
-  const rd=getRD(j.categories);
-  const expLine=IS_FRESHER
-    ?\`final-year \${DEGREE} student at \${COLLEGE} (graduating \${GRAD_YEAR}) with hands-on internship experience in finance operations, market research, and MIS reporting\`
-    :\`\${EXP} years experienced professional in \${rd}\`;
-  return \`<div style="font-family:Arial,sans-serif;max-width:680px;color:#222;line-height:1.55">
-<h2 style="margin:0 0 4px">\${YOUR_NAME}</h2>
-<p style="margin:0 0 16px;color:#555;font-size:14px">\${rd} | \${DEGREE}, \${COLLEGE} (\${GRAD_YEAR}) | Best Presenter 2026 | Available Immediately</p>
-<p>\${g}</p>
-<p>I came across the <strong>\${j.role}</strong> opening and I am excited to apply. I am a \${expLine} — available to join immediately.</p>
-<table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px;margin:12px 0">
-  <tr><td><strong>Qualification</strong></td><td>\${DEGREE} — \${COLLEGE} | Expected \${GRAD_YEAR}</td></tr>
-  <tr><td><strong>Internship Experience</strong></td><td>5 months — Finance (Valeur Fabtex) + Content (Aashman Foundation)</td></tr>
-  <tr><td><strong>Key Achievement</strong></td><td>Best Presenter Award 2026</td></tr>
-  <tr><td><strong>Expected CTC</strong></td><td>As per company standards</td></tr>
-  <tr><td><strong>Availability</strong></td><td>Immediately Available — \${YOUR_LOCATION}</td></tr>
-</table>
-<h3 style="margin:18px 0 6px">Skills & Expertise</h3>
-<pre style="font-family:Arial,sans-serif;white-space:pre-wrap;margin:0;font-size:14px">\${sk}</pre>
-<h3 style="margin:18px 0 6px">Key Highlights</h3>
-<ul style="margin:0;padding-left:18px">
-  <li>Best Presenter Award (2026) — High-impact analytical research presentation</li>
-  <li>Delivered financial models & MIS reports — Valeur Fabtex Pvt Ltd</li>
-  <li>GST filing, invoice processing & compliance workflows — hands-on taxation exposure</li>
-  <li>1st Prize — Best Out of Waste, Razmaataz (creative execution & teamwork)</li>
-</ul>
-<h3 style="margin:18px 0 6px">Credentials</h3>
-<pre style="font-family:Arial,sans-serif;white-space:pre-wrap;margin:0;font-size:14px">\${ct}</pre>
-<p style="margin-top:16px">I would love the opportunity to contribute to your team. My resume is linked below.</p>
-<p>I bring strong analytical thinking, a proactive attitude, and the ability to deliver from day one.</p>
-<p><a href="\${RESUME_LINK}">VIEW RESUME</a> · <a href="\${YOUR_LINKEDIN}">LINKEDIN</a></p>
-<p>Thank you for your time.</p>
-<p>Warm regards,<br/><strong>\${YOUR_NAME}</strong><br/>\${rd} | \${DEGREE}, \${COLLEGE} (\${GRAD_YEAR})<br/>\${YOUR_EMAIL} | +91 \${YOUR_PHONE} | \${YOUR_LOCATION}, India</p>
-<p style="font-size:12px;color:#888">In response to a position posted on LinkedIn · Resume</p>
-</div>\`;
-}
-
-const output=jobListings.map(j=>({json:{from:YOUR_EMAIL,to:j.email,subject:genSubject(j),html:genBody(j),recruiter:j.recruiter,role:j.role}}));
-return output;`;
-}
-
-function buildWorkflow(profile, entries, batchNum, totalBatches) {
-  const code = generateWorkflowCode(profile, entries);
-  return {
-    name: `${profile.name} – Job Mailer${
-      totalBatches > 1 ? ` Batch ${batchNum}/${totalBatches}` : ""
-    } (${entries.length} emails)`,
-    nodes: [
-      {
-        id: "t1",
-        name: "Start",
-        type: "n8n-nodes-base.manualTrigger",
-        typeVersion: 1,
-        position: [200, 400],
-        parameters: {},
-      },
-      {
-        id: "c1",
-        name: "Format Emails",
-        type: "n8n-nodes-base.code",
-        typeVersion: 2,
-        position: [460, 400],
-        parameters: { jsCode: code },
-      },
-      {
-        id: "b1",
-        name: "One At A Time",
-        type: "n8n-nodes-base.splitInBatches",
-        typeVersion: 3,
-        position: [740, 400],
-        parameters: { batchSize: 1, options: {} },
-      },
-      {
-        id: "s1",
-        name: "Gmail SMTP",
-        type: "n8n-nodes-base.emailSend",
-        typeVersion: 2.1,
-        position: [1020, 400],
-        parameters: {
-          fromEmail: "={{ $json.from }}",
-          toEmail: "={{ $json.to }}",
-          subject: "={{ $json.subject }}",
-          emailType: "html",
-          html: "={{ $json.html }}",
-          options: { allowUnauthorizedCerts: false, appendAttribution: false },
-        },
-        credentials: {
-          smtp: { id: "YOUR_SMTP_CREDENTIAL_ID", name: "Gmail SMTP" },
-        },
-      },
-      {
-        id: "w1",
-        name: "Wait 10s",
-        type: "n8n-nodes-base.wait",
-        typeVersion: 1.1,
-        position: [1020, 600],
-        parameters: { amount: 10, unit: "seconds" },
-      },
-      {
-        id: "n1",
-        name: "Info",
-        type: "n8n-nodes-base.stickyNote",
-        typeVersion: 1,
-        position: [140, 120],
-        parameters: {
-          content: `## ${profile.name} — Batch ${batchNum}/${totalBatches}\n\n**${entries.length} emails** pre-loaded\nDeduplicated\nRole-specific subjects\n\n1. Configure Gmail SMTP\n2. Execute`,
-          width: 340,
-          height: 180,
-        },
-      },
-    ],
-    connections: {
-      Start: { main: [[{ node: "Format Emails", type: "main", index: 0 }]] },
-      "Format Emails": {
-        main: [[{ node: "One At A Time", type: "main", index: 0 }]],
-      },
-      "One At A Time": {
-        main: [null, [{ node: "Gmail SMTP", type: "main", index: 0 }]],
-      },
-      "Gmail SMTP": { main: [[{ node: "Wait 10s", type: "main", index: 0 }]] },
-      "Wait 10s": {
-        main: [[{ node: "One At A Time", type: "main", index: 0 }]],
-      },
-    },
-    settings: { executionOrder: "v1" },
-    meta: { templateCredsSetupCompleted: true },
-  };
-}
-
 const FIELDS = [
   ["name", "Full name"],
   ["email", "Email"],
@@ -300,25 +45,30 @@ const FIELDS = [
 ];
 
 export default function App() {
+  const [tab, setTab] = useState("process");
   const [profile, setProfile] = useState(DEFAULT_PROFILE);
-  const [showProfile, setShowProfile] = useState(false);
-  const [sentEmails, setSentEmails] = useState(new Set());
+  const [history, setHistory] = useState([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
-  const [processedEntries, setProcessedEntries] = useState([]);
+  const [entries, setEntries] = useState([]);
   const [stats, setStats] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState([]);
   const [toast, setToast] = useState(null);
+  const [confirm, setConfirm] = useState(null);
   const fileRef = useRef();
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setSentEmails(new Set(JSON.parse(raw)));
-    } catch {}
+    setHistory(loadHistory());
+    setProfile(loadProfile(DEFAULT_PROFILE));
     setStorageLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (storageLoaded) saveProfile(profile);
+  }, [profile, storageLoaded]);
+
+  const emailIndex = useMemo(() => buildEmailIndex(history), [history]);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
@@ -327,61 +77,87 @@ export default function App() {
 
   const processFiles = useCallback(
     async (files) => {
-      const all = [];
+      if (!files.length) return;
+      const allRaw = [];
+      const filesUsed = [];
       for (const file of files) {
         try {
           const text = await file.text();
           const data = JSON.parse(text);
-          if (!Array.isArray(data)) continue;
+          if (!Array.isArray(data)) {
+            showToast(`${file.name}: expected JSON array — skipped`, "error");
+            continue;
+          }
+          filesUsed.push(file.name);
           for (const item of data) {
             for (const email of item.emails || []) {
-              const e = email.trim();
-              if (e && e.includes("@"))
-                all.push({
+              const e = (email || "").trim();
+              if (e && e.includes("@")) {
+                allRaw.push({
                   email: e,
+                  emailLower: e.toLowerCase(),
                   rawName: item.name || "",
                   postText: item.post_text || "",
+                  sourceFile: file.name,
                 });
+              }
             }
           }
         } catch {
           showToast(`Could not parse ${file.name}`, "error");
         }
       }
-      let dupes = 0,
-        newCount = 0;
-      const entries = [];
-      const seen = new Set(sentEmails);
-      for (const item of all) {
-        if (seen.has(item.email.toLowerCase())) {
-          dupes++;
-          continue;
-        }
-        seen.add(item.email.toLowerCase());
-        newCount++;
-        entries.push({
-          email: item.email,
-          recruiter: cleanName(item.rawName),
-          role: extractRole(item.postText),
-          categories: getCategories(item.postText),
-        });
+
+      const dedupedByThisBatch = new Map();
+      for (const r of allRaw) {
+        if (!dedupedByThisBatch.has(r.emailLower)) dedupedByThisBatch.set(r.emailLower, r);
       }
+
+      const newEntries = [];
+      const duplicates = [];
+      for (const r of dedupedByThisBatch.values()) {
+        const prev = emailIndex.get(r.emailLower);
+        const entry = {
+          email: r.email,
+          emailLower: r.emailLower,
+          recruiter: cleanName(r.rawName),
+          role: extractRole(r.postText),
+          categories: getCategories(r.postText),
+          sourceFile: r.sourceFile,
+          excluded: false,
+          status: prev ? "duplicate" : "new",
+          firstSeenAt: prev?.addedAt || null,
+        };
+        if (prev) duplicates.push(entry);
+        else newEntries.push(entry);
+      }
+
       const catCounts = {};
-      for (const e of entries)
+      for (const e of newEntries)
         for (const c of e.categories) catCounts[c] = (catCounts[c] || 0) + 1;
-      setProcessedEntries(entries);
+
+      setEntries(newEntries);
       setStats({
-        total: all.length,
-        newCount,
-        dupes,
+        totalFound: allRaw.length,
+        uniqueInBatch: dedupedByThisBatch.size,
+        newCount: newEntries.length,
+        dupes: duplicates.length,
         catCounts,
-        batches: Math.ceil(entries.length / BATCH_SIZE),
+        batches: Math.max(1, Math.ceil(newEntries.length / BATCH_SIZE)),
+        files: filesUsed,
+        duplicates,
       });
       setGenerated([]);
-      if (newCount > 0) showToast(`${newCount} new · ${dupes} duplicates skipped`);
-      else showToast("All emails were duplicates — nothing new!", "error");
+
+      if (newEntries.length > 0)
+        showToast(
+          `${newEntries.length} new · ${duplicates.length} already in history`
+        );
+      else if (duplicates.length > 0)
+        showToast("All emails were duplicates — nothing new!", "error");
+      else showToast("No valid emails found in those files", "error");
     },
-    [sentEmails]
+    [emailIndex]
   );
 
   const handleDrop = useCallback(
@@ -389,24 +165,39 @@ export default function App() {
       e.preventDefault();
       setDragging(false);
       processFiles(
-        [...e.dataTransfer.files].filter((f) => f.name.endsWith(".json"))
+        [...e.dataTransfer.files].filter((f) => f.name.toLowerCase().endsWith(".json"))
       );
     },
     [processFiles]
   );
 
+  const updateEntry = (idx, patch) =>
+    setEntries((prev) => prev.map((e, i) => (i === idx ? { ...e, ...patch } : e)));
+
+  const toggleEntryCategory = (idx, cat) =>
+    setEntries((prev) =>
+      prev.map((e, i) => {
+        if (i !== idx) return e;
+        const has = e.categories.includes(cat);
+        const next = has ? e.categories.filter((c) => c !== cat) : [...e.categories, cat];
+        return { ...e, categories: next.length ? next : ["management"] };
+      })
+    );
+
   const generateWorkflows = () => {
-    if (!processedEntries.length) return;
+    const active = entries.filter((e) => !e.excluded);
+    if (!active.length) {
+      showToast("No entries selected — uncheck 'exclude' to include", "error");
+      return;
+    }
     setGenerating(true);
     const batches = [];
-    for (let i = 0; i < processedEntries.length; i += BATCH_SIZE) {
-      batches.push(processedEntries.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < active.length; i += BATCH_SIZE) {
+      batches.push(active.slice(i, i + BATCH_SIZE));
     }
     const wfs = batches.map((batch, idx) => ({
       name:
-        batches.length > 1
-          ? `Batch ${idx + 1} of ${batches.length}`
-          : "Workflow",
+        batches.length > 1 ? `Batch ${idx + 1} of ${batches.length}` : "Workflow",
       count: batch.length,
       blob: new Blob(
         [JSON.stringify(buildWorkflow(profile, batch, idx + 1, batches.length), null, 2)],
@@ -418,14 +209,24 @@ export default function App() {
           : `${profile.name.replace(/\s+/g, "_")}_mailer.json`,
     }));
     setGenerated(wfs);
-    const newSent = new Set(sentEmails);
-    for (const e of processedEntries) newSent.add(e.email.toLowerCase());
-    setSentEmails(newSent);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...newSent]));
-    } catch {}
+
+    const now = new Date().toISOString();
+    const additions = active.map((e) => ({
+      email: e.email,
+      emailLower: e.emailLower,
+      recruiter: e.recruiter,
+      role: e.role,
+      categories: e.categories,
+      addedAt: now,
+      generatedAt: now,
+      sourceFile: e.sourceFile || null,
+    }));
+    const merged = [...history, ...additions];
+    setHistory(merged);
+    saveHistory(merged);
+
     setGenerating(false);
-    showToast(`${wfs.length} workflow${wfs.length > 1 ? "s" : ""} ready!`);
+    showToast(`${wfs.length} workflow${wfs.length > 1 ? "s" : ""} ready · history updated`);
   };
 
   const downloadWorkflow = (wf) => {
@@ -437,12 +238,43 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadAll = () => {
+    generated.forEach((wf, i) => setTimeout(() => downloadWorkflow(wf), i * 150));
+  };
+
+  const exportCurrentBatchExcel = () => {
+    if (!entries.length) return;
+    exportEntriesToExcel(entries, `current_batch_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showToast("Current batch exported to Excel");
+  };
+
+  const exportHistoryExcel = () => {
+    if (!history.length) {
+      showToast("History is empty", "error");
+      return;
+    }
+    exportHistoryToExcel(history);
+    showToast(`Exported ${history.length} rows to Excel`);
+  };
+
   const clearHistory = () => {
-    setSentEmails(new Set());
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {}
-    showToast("History cleared");
+    setConfirm({
+      title: "Clear all history?",
+      message: `This permanently removes all ${history.length} tracked emails. Future uploads will no longer recognize them as duplicates. This cannot be undone.`,
+      onConfirm: () => {
+        clearAllHistory();
+        setHistory([]);
+        showToast("History cleared");
+        setConfirm(null);
+      },
+    });
+  };
+
+  const deleteHistoryRow = (emailLower) => {
+    const next = history.filter((h) => h.emailLower !== emailLower);
+    setHistory(next);
+    saveHistory(next);
+    showToast("Removed 1 entry from history");
   };
 
   const pf = (key, val) => setProfile((p) => ({ ...p, [key]: val }));
@@ -459,94 +291,116 @@ export default function App() {
           </p>
         </div>
         <div className="header-actions">
-          {storageLoaded && sentEmails.size > 0 && (
-            <span className="tracked-badge">{sentEmails.size} tracked</span>
+          {storageLoaded && history.length > 0 && (
+            <span className="tracked-badge">{history.length} in history</span>
           )}
-          <button onClick={() => setShowProfile((p) => !p)}>
-            {showProfile ? "Hide" : "Profile"}
-          </button>
         </div>
       </header>
 
-      {showProfile && (
-        <section className="card">
-          <h2 className="card-title">Profile</h2>
-          <div className="radio-row">
-            {["fresher", "experienced"].map((t) => (
-              <label key={t}>
-                <input
-                  type="radio"
-                  name="jobType"
-                  checked={profile.jobType === t}
-                  onChange={() => pf("jobType", t)}
-                />
-                {t.charAt(0).toUpperCase() + t.slice(1)}
-              </label>
-            ))}
-          </div>
-          <div className="profile-grid">
-            {FIELDS.map(([k, label]) => (
-              <div key={k}>
-                <label className="field-label">{label}</label>
-                <input
-                  type="text"
-                  value={profile[k]}
-                  onChange={(e) => pf(k, e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-            ))}
-            {profile.jobType === "experienced" && (
-              <div>
-                <label className="field-label">Experience (e.g. 1.6)</label>
-                <input
-                  type="text"
-                  value={profile.experience}
-                  onChange={(e) => pf("experience", e.target.value)}
-                  style={{ width: "100%" }}
-                />
-              </div>
-            )}
-          </div>
-          <div className="field-full">
-            <label className="field-label">LinkedIn URL</label>
-            <input
-              type="url"
-              value={profile.linkedin}
-              onChange={(e) => pf("linkedin", e.target.value)}
-              style={{ width: "100%" }}
-            />
-          </div>
-          <div className="field-full">
-            <label className="field-label">Resume link (Google Drive)</label>
-            <input
-              type="url"
-              value={profile.resumeLink}
-              onChange={(e) => pf("resumeLink", e.target.value)}
-              style={{ width: "100%" }}
-            />
-          </div>
-        </section>
+      <nav className="tabs">
+        <button
+          className={tab === "process" ? "tab active" : "tab"}
+          onClick={() => setTab("process")}
+        >
+          Process
+        </button>
+        <button
+          className={tab === "history" ? "tab active" : "tab"}
+          onClick={() => setTab("history")}
+        >
+          History {history.length > 0 && <span className="pill">{history.length}</span>}
+        </button>
+        <button
+          className={tab === "profile" ? "tab active" : "tab"}
+          onClick={() => setTab("profile")}
+        >
+          Profile
+        </button>
+      </nav>
+
+      {tab === "process" && (
+        <ProcessTab
+          dragging={dragging}
+          setDragging={setDragging}
+          handleDrop={handleDrop}
+          fileRef={fileRef}
+          processFiles={processFiles}
+          stats={stats}
+          entries={entries}
+          updateEntry={updateEntry}
+          toggleEntryCategory={toggleEntryCategory}
+          generating={generating}
+          generated={generated}
+          generateWorkflows={generateWorkflows}
+          downloadWorkflow={downloadWorkflow}
+          downloadAll={downloadAll}
+          exportCurrentBatchExcel={exportCurrentBatchExcel}
+        />
       )}
 
+      {tab === "history" && (
+        <HistoryTab
+          history={history}
+          exportHistoryExcel={exportHistoryExcel}
+          clearHistory={clearHistory}
+          deleteHistoryRow={deleteHistoryRow}
+        />
+      )}
+
+      {tab === "profile" && <ProfileTab profile={profile} pf={pf} />}
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          message={confirm.message}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProcessTab({
+  dragging,
+  setDragging,
+  handleDrop,
+  fileRef,
+  processFiles,
+  stats,
+  entries,
+  updateEntry,
+  toggleEntryCategory,
+  generating,
+  generated,
+  generateWorkflows,
+  downloadWorkflow,
+  downloadAll,
+  exportCurrentBatchExcel,
+}) {
+  const [showDupes, setShowDupes] = useState(false);
+  const activeCount = entries.filter((e) => !e.excluded).length;
+
+  return (
+    <>
       <div
         className={`dropzone ${dragging ? "dragging" : ""}`}
         onDrop={handleDrop}
         onDragOver={(e) => {
           e.preventDefault();
-          setDragging(true);
+          if (!dragging) setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onClick={() => fileRef.current.click()}
       >
         <div className="dropzone-title">Drop LinkedIn email JSON files here</div>
         <div className="dropzone-hint">
-          Multiple files supported · duplicates skipped automatically
+          Multiple files supported · duplicates checked against full history
         </div>
         <input
           ref={fileRef}
           type="file"
-          accept=".json"
+          accept=".json,application/json"
           multiple
           onChange={(e) => {
             if (e.target.files?.length) processFiles([...e.target.files]);
@@ -560,9 +414,10 @@ export default function App() {
         <section className="card">
           <div className="stats-grid">
             {[
-              ["Total found", stats.total, null],
+              ["Total found", stats.totalFound, null],
+              ["Unique in batch", stats.uniqueInBatch, null],
               ["New emails", stats.newCount, "success"],
-              ["Duplicates skipped", stats.dupes, "warning"],
+              ["Already in history", stats.dupes, "warning"],
               ["Batches needed", stats.batches, null],
             ].map(([label, val, sem]) => (
               <div key={label} className={`stat ${sem || ""}`}>
@@ -574,9 +429,7 @@ export default function App() {
 
           {Object.keys(stats.catCounts).length > 0 && (
             <>
-              <h3 className="card-title" style={{ fontSize: 13 }}>
-                Category breakdown
-              </h3>
+              <h3 className="section-label">Category breakdown</h3>
               <div className="cat-row">
                 {Object.entries(stats.catCounts)
                   .sort((a, b) => b[1] - a[1])
@@ -593,27 +446,138 @@ export default function App() {
             </>
           )}
 
-          {stats.newCount > 0 && (
+          {stats.files.length > 0 && (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              From: {stats.files.join(", ")}
+            </div>
+          )}
+
+          {stats.dupes > 0 && (
+            <button
+              className="link"
+              onClick={() => setShowDupes((v) => !v)}
+              style={{ marginTop: 10 }}
+            >
+              {showDupes ? "Hide" : "Show"} {stats.dupes} duplicate
+              {stats.dupes > 1 ? "s" : ""}
+            </button>
+          )}
+
+          {showDupes && stats.duplicates.length > 0 && (
+            <div className="dupe-list">
+              {stats.duplicates.slice(0, 200).map((d) => (
+                <div key={d.emailLower} className="dupe-row">
+                  <span className="mono">{d.email}</span>
+                  <span className="muted small">{d.recruiter}</span>
+                </div>
+              ))}
+              {stats.duplicates.length > 200 && (
+                <div className="muted small">
+                  …and {stats.duplicates.length - 200} more
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {entries.length > 0 && (
+        <section className="card">
+          <div className="row-between">
+            <h3 className="section-label" style={{ margin: 0 }}>
+              Preview · edit before generating ({activeCount} active /{" "}
+              {entries.length} total)
+            </h3>
+            <button onClick={exportCurrentBatchExcel}>Export batch (Excel)</button>
+          </div>
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 36 }}>Use</th>
+                  <th>Email</th>
+                  <th>Recruiter</th>
+                  <th>Role</th>
+                  <th>Categories</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((e, i) => (
+                  <tr key={e.emailLower} className={e.excluded ? "excluded" : ""}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={!e.excluded}
+                        onChange={(ev) => updateEntry(i, { excluded: !ev.target.checked })}
+                      />
+                    </td>
+                    <td className="mono small">{e.email}</td>
+                    <td>
+                      <input
+                        type="text"
+                        value={e.recruiter}
+                        onChange={(ev) => updateEntry(i, { recruiter: ev.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="text"
+                        value={e.role}
+                        onChange={(ev) => updateEntry(i, { role: ev.target.value })}
+                      />
+                    </td>
+                    <td>
+                      <div className="cat-row">
+                        {CATEGORY_LIST.map((c) => {
+                          const active = e.categories.includes(c);
+                          return (
+                            <button
+                              key={c}
+                              type="button"
+                              className={`cat-toggle ${active ? "active" : ""}`}
+                              style={
+                                active
+                                  ? { background: CAT_COLORS[c], borderColor: CAT_COLORS[c] }
+                                  : undefined
+                              }
+                              onClick={() => toggleEntryCategory(i, c)}
+                            >
+                              {c}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="actions-row">
             <button
               className="primary"
-              disabled={generating}
+              disabled={generating || activeCount === 0}
               onClick={generateWorkflows}
             >
               {generating
                 ? "Generating..."
-                : stats.batches > 1
-                ? `Generate ${stats.batches} workflow files (${stats.newCount} emails)`
-                : `Generate workflow (${stats.newCount} emails)`}
+                : activeCount > BATCH_SIZE
+                ? `Generate ${Math.ceil(activeCount / BATCH_SIZE)} workflow files (${activeCount} emails)`
+                : `Generate workflow (${activeCount} emails)`}
             </button>
-          )}
+          </div>
         </section>
       )}
 
       {generated.length > 0 && (
         <section className="card">
-          <h2 className="card-title">
-            Ready — import into n8n, connect Gmail SMTP, execute
-          </h2>
+          <div className="row-between">
+            <h2 className="card-title">Ready — import into n8n, connect Gmail SMTP, execute</h2>
+            {generated.length > 1 && (
+              <button onClick={downloadAll}>Download all</button>
+            )}
+          </div>
           <div className="generated-list">
             {generated.map((wf, i) => (
               <div key={i} className="generated-item">
@@ -623,32 +587,253 @@ export default function App() {
                     {wf.count} emails · {wf.filename}
                   </div>
                 </div>
-                <button
-                  className="primary"
-                  onClick={() => downloadWorkflow(wf)}
-                >
+                <button className="primary" onClick={() => downloadWorkflow(wf)}>
                   Download
                 </button>
               </div>
             ))}
           </div>
           <p className="footer-note">
-            {sentEmails.size} emails saved to memory — future uploads skip them
-            automatically
+            Emails were added to history. Future uploads will skip them automatically.
           </p>
         </section>
       )}
+    </>
+  );
+}
 
-      {storageLoaded && sentEmails.size > 0 && (
-        <div className="history-bar">
-          <span>
-            {sentEmails.size} emails in dedup history · persists across sessions
+function HistoryTab({ history, exportHistoryExcel, clearHistory, deleteHistoryRow }) {
+  const [query, setQuery] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return history.filter((h) => {
+      if (catFilter !== "all" && !(h.categories || []).includes(catFilter)) return false;
+      if (!q) return true;
+      return (
+        h.email?.toLowerCase().includes(q) ||
+        h.recruiter?.toLowerCase().includes(q) ||
+        h.role?.toLowerCase().includes(q) ||
+        h.sourceFile?.toLowerCase().includes(q)
+      );
+    });
+  }, [history, query, catFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
+
+  if (history.length === 0) {
+    return (
+      <section className="card empty">
+        <p>No history yet. Generate a workflow on the Process tab to start tracking.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card">
+      <div className="history-controls">
+        <input
+          type="text"
+          placeholder="Search email, recruiter, role, file…"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setPage(0);
+          }}
+          style={{ flex: 1, minWidth: 220 }}
+        />
+        <select
+          value={catFilter}
+          onChange={(e) => {
+            setCatFilter(e.target.value);
+            setPage(0);
+          }}
+          className="select"
+        >
+          <option value="all">All categories</option>
+          {CATEGORY_LIST.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <button className="primary" onClick={exportHistoryExcel}>
+          Download Excel
+        </button>
+        <button className="danger" onClick={clearHistory}>
+          Clear history
+        </button>
+      </div>
+
+      <div className="muted small" style={{ marginBottom: 8 }}>
+        Showing {filtered.length === 0 ? 0 : safePage * pageSize + 1}–
+        {Math.min((safePage + 1) * pageSize, filtered.length)} of {filtered.length}
+        {filtered.length !== history.length && ` (${history.length} total)`}
+      </div>
+
+      <div className="history-table-wrap">
+        <table className="history-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Email</th>
+              <th>Recruiter</th>
+              <th>Role</th>
+              <th>Categories</th>
+              <th>Generated</th>
+              <th>Source</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.map((h, i) => (
+              <tr key={h.emailLower || i}>
+                <td className="muted small">{safePage * pageSize + i + 1}</td>
+                <td className="mono small">{h.email}</td>
+                <td className="small">{h.recruiter || "—"}</td>
+                <td className="small">{h.role || "—"}</td>
+                <td>
+                  <div className="cat-row tight">
+                    {(h.categories || []).map((c) => (
+                      <span
+                        key={c}
+                        className="cat-chip tight"
+                        style={{ background: CAT_COLORS[c] || "#888" }}
+                      >
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                </td>
+                <td className="muted small">
+                  {h.generatedAt
+                    ? new Date(h.generatedAt).toLocaleDateString("en-IN", {
+                        year: "2-digit",
+                        month: "short",
+                        day: "2-digit",
+                      })
+                    : h.legacy
+                    ? "legacy"
+                    : "—"}
+                </td>
+                <td className="muted small">{h.sourceFile || "—"}</td>
+                <td>
+                  <button
+                    className="link danger"
+                    title="Remove from history"
+                    onClick={() => deleteHistoryRow(h.emailLower)}
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {totalPages > 1 && (
+        <div className="pager">
+          <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
+            ← Prev
+          </button>
+          <span className="muted small">
+            Page {safePage + 1} of {totalPages}
           </span>
-          <button className="danger" onClick={clearHistory}>
-            Clear history
+          <button
+            disabled={safePage >= totalPages - 1}
+            onClick={() => setPage(safePage + 1)}
+          >
+            Next →
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+function ProfileTab({ profile, pf }) {
+  return (
+    <section className="card">
+      <h2 className="card-title">Profile</h2>
+      <div className="radio-row">
+        {["fresher", "experienced"].map((t) => (
+          <label key={t}>
+            <input
+              type="radio"
+              name="jobType"
+              checked={profile.jobType === t}
+              onChange={() => pf("jobType", t)}
+            />
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </label>
+        ))}
+      </div>
+      <div className="profile-grid">
+        {FIELDS.map(([k, label]) => (
+          <div key={k}>
+            <label className="field-label">{label}</label>
+            <input
+              type="text"
+              value={profile[k]}
+              onChange={(e) => pf(k, e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </div>
+        ))}
+        {profile.jobType === "experienced" && (
+          <div>
+            <label className="field-label">Experience (e.g. 1.6)</label>
+            <input
+              type="text"
+              value={profile.experience}
+              onChange={(e) => pf("experience", e.target.value)}
+              style={{ width: "100%" }}
+            />
+          </div>
+        )}
+      </div>
+      <div className="field-full">
+        <label className="field-label">LinkedIn URL</label>
+        <input
+          type="url"
+          value={profile.linkedin}
+          onChange={(e) => pf("linkedin", e.target.value)}
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div className="field-full">
+        <label className="field-label">Resume link (Google Drive)</label>
+        <input
+          type="url"
+          value={profile.resumeLink}
+          onChange={(e) => pf("resumeLink", e.target.value)}
+          style={{ width: "100%" }}
+        />
+      </div>
+      <p className="footer-note">Profile auto-saves to this browser.</p>
+    </section>
+  );
+}
+
+function ConfirmDialog({ title, message, onConfirm, onCancel }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{title}</h3>
+        <p>{message}</p>
+        <div className="modal-actions">
+          <button onClick={onCancel}>Cancel</button>
+          <button className="danger filled" onClick={onConfirm}>
+            Confirm
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
