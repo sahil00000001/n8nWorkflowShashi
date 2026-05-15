@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, memo } from "react";
 import { CATEGORY_LIST, CAT_COLORS } from "./lib/parsers.js";
 import { buildWorkflow } from "./lib/workflow.js";
 import {
@@ -8,9 +8,8 @@ import {
   loadProfile,
   saveProfile,
 } from "./lib/storage.js";
-import { exportLeadsToExcel, exportEntriesToExcel } from "./lib/excel.js";
+import { exportLeadsToExcel } from "./lib/excel.js";
 import {
-  emptyLead,
   normalizeLead,
   leadFromLinkedInItem,
   mergeLeads,
@@ -20,6 +19,15 @@ import {
   STATUS_COLORS,
 } from "./lib/leads.js";
 import { parseExcelFile, rowsToLeads, FIELD_LABELS } from "./lib/excelImport.js";
+import {
+  isCloudConfigured,
+  fetchAllLeads,
+  upsertLeads,
+  deleteLeadsByEmail,
+  deleteAllLeads as cloudDeleteAll,
+  indexLeads,
+  diffLeads,
+} from "./lib/cloudSync.js";
 
 const BATCH_SIZE = 400;
 
@@ -72,11 +80,40 @@ export default function App() {
   const [generated, setGenerated] = useState([]);
   const [importPreview, setImportPreview] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [syncStatus, setSyncStatus] = useState(
+    isCloudConfigured() ? "idle" : "local-only"
+  );
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const lastSyncedMapRef = useRef(new Map());
 
   useEffect(() => {
-    setLeads(loadLeads());
+    const local = loadLeads();
+    setLeads(local);
     setProfile(loadProfile(DEFAULT_PROFILE));
+    lastSyncedMapRef.current = indexLeads(local);
     setStorageLoaded(true);
+
+    if (isCloudConfigured()) {
+      setSyncStatus("syncing");
+      fetchAllLeads()
+        .then(async (cloud) => {
+          if (cloud == null) return;
+          if (cloud.length === 0 && local.length > 0) {
+            await upsertLeads(local);
+            lastSyncedMapRef.current = indexLeads(local);
+          } else {
+            setLeads(cloud);
+            saveLeads(cloud);
+            lastSyncedMapRef.current = indexLeads(cloud);
+          }
+          setSyncStatus("synced");
+          setLastSyncedAt(Date.now());
+        })
+        .catch((e) => {
+          console.error("Initial cloud fetch failed:", e);
+          setSyncStatus("error");
+        });
+    }
   }, []);
 
   useEffect(() => {
@@ -84,8 +121,48 @@ export default function App() {
   }, [profile, storageLoaded]);
 
   useEffect(() => {
-    if (storageLoaded) saveLeads(leads);
+    if (!storageLoaded) return;
+    saveLeads(leads);
+    if (!isCloudConfigured()) return;
+
+    const handle = setTimeout(async () => {
+      const nextMap = indexLeads(leads);
+      const { toUpsert, toDelete } = diffLeads(lastSyncedMapRef.current, nextMap);
+      if (toUpsert.length === 0 && toDelete.length === 0) return;
+
+      setSyncStatus("syncing");
+      try {
+        if (toUpsert.length) await upsertLeads(toUpsert);
+        if (toDelete.length) await deleteLeadsByEmail(toDelete);
+        lastSyncedMapRef.current = nextMap;
+        setSyncStatus("synced");
+        setLastSyncedAt(Date.now());
+      } catch (e) {
+        console.error("Cloud sync failed:", e);
+        setSyncStatus("error");
+      }
+    }, 800);
+
+    return () => clearTimeout(handle);
   }, [leads, storageLoaded]);
+
+  const manualResync = async () => {
+    if (!isCloudConfigured()) return;
+    setSyncStatus("syncing");
+    try {
+      const cloud = await fetchAllLeads();
+      if (cloud) {
+        setLeads(cloud);
+        saveLeads(cloud);
+        lastSyncedMapRef.current = indexLeads(cloud);
+      }
+      setSyncStatus("synced");
+      setLastSyncedAt(Date.now());
+    } catch (e) {
+      console.error(e);
+      setSyncStatus("error");
+    }
+  };
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type, id: Date.now() });
@@ -142,7 +219,13 @@ export default function App() {
         />
       )}
 
-      <Header leads={leads} loaded={storageLoaded} />
+      <Header
+        leads={leads}
+        loaded={storageLoaded}
+        syncStatus={syncStatus}
+        lastSyncedAt={lastSyncedAt}
+        onResync={manualResync}
+      />
 
       <nav className="tabs">
         {[
@@ -176,11 +259,21 @@ export default function App() {
             onClearAll={() =>
               setConfirm({
                 title: "Delete all leads?",
-                message: `This permanently removes all ${leads.length} leads. Cannot be undone.`,
-                onConfirm: () => {
+                message: `This permanently removes all ${leads.length} leads from ${
+                  isCloudConfigured() ? "cloud + this browser" : "this browser"
+                }. Cannot be undone.`,
+                onConfirm: async () => {
                   clearAllLeads();
                   setLeads([]);
                   setSelectedIds(new Set());
+                  if (isCloudConfigured()) {
+                    try {
+                      await cloudDeleteAll();
+                      lastSyncedMapRef.current = new Map();
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }
                   showToast("All leads cleared");
                 },
               })
@@ -219,7 +312,7 @@ export default function App() {
   );
 }
 
-function Header({ leads, loaded }) {
+function Header({ leads, loaded, syncStatus, lastSyncedAt, onResync }) {
   return (
     <header className="hero">
       <div className="hero-bg" />
@@ -229,6 +322,7 @@ function Header({ leads, loaded }) {
           <p className="subtitle">
             One database. Excel + LinkedIn JSON in. n8n workflows + Excel out.
           </p>
+          <SyncBadge status={syncStatus} lastSyncedAt={lastSyncedAt} onResync={onResync} />
         </div>
         {loaded && (
           <div className="hero-stats">
@@ -251,6 +345,54 @@ function Header({ leads, loaded }) {
       </div>
     </header>
   );
+}
+
+function SyncBadge({ status, lastSyncedAt, onResync }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!lastSyncedAt) return;
+    const t = setInterval(() => force((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, [lastSyncedAt]);
+
+  const ago = lastSyncedAt ? timeAgo(lastSyncedAt) : null;
+
+  const labels = {
+    "local-only": "Local only — set up cloud sync in README",
+    idle: "Connecting…",
+    syncing: "Syncing…",
+    synced: ago ? `Synced ${ago}` : "Synced",
+    error: "Sync error — click to retry",
+  };
+  const classes = {
+    "local-only": "warning",
+    syncing: "syncing",
+    synced: "ok",
+    error: "error",
+  };
+
+  return (
+    <button
+      className={`sync-badge ${classes[status] || ""}`}
+      onClick={status === "error" ? onResync : undefined}
+      disabled={status !== "error"}
+      title={status === "local-only" ? "Add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY to enable" : ""}
+    >
+      <span className={`sync-dot ${status}`} />
+      {labels[status] || status}
+    </button>
+  );
+}
+
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 function HeroStat({ label, value, accent }) {
@@ -412,12 +554,17 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
     setSelectedIds(next);
   };
 
-  const toggleOne = (emailLower) => {
-    const next = new Set(selectedIds);
-    if (next.has(emailLower)) next.delete(emailLower);
-    else next.add(emailLower);
-    setSelectedIds(next);
-  };
+  const toggleOne = useCallback(
+    (emailLower) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(emailLower)) next.delete(emailLower);
+        else next.add(emailLower);
+        return next;
+      });
+    },
+    [setSelectedIds]
+  );
 
   const updateStatusForSelected = (status) => {
     if (selectedIds.size === 0) return;
@@ -589,50 +736,13 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
               </thead>
               <tbody>
                 {pageRows.map((l) => (
-                  <tr key={l.emailLower} className="lead-row">
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(l.emailLower)}
-                        onChange={() => toggleOne(l.emailLower)}
-                      />
-                    </td>
-                    <td className="mono small">{l.email}</td>
-                    <td className="small">{l.name || "—"}</td>
-                    <td className="small">{l.designation || "—"}</td>
-                    <td className="small">{l.company || "—"}</td>
-                    <td className="small">{l.location || "—"}</td>
-                    <td>
-                      <span
-                        className="status-chip"
-                        style={{ background: STATUS_COLORS[l.status] || "#888" }}
-                      >
-                        {l.status}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="cat-row tight">
-                        {(l.categories || []).slice(0, 3).map((c) => (
-                          <span
-                            key={c}
-                            className="cat-chip tight"
-                            style={{ background: CAT_COLORS[c] || "#888" }}
-                          >
-                            {c}
-                          </span>
-                        ))}
-                        {(l.categories || []).length > 3 && (
-                          <span className="muted small">+{l.categories.length - 3}</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="muted small">{fmtDate(l.addedAt)}</td>
-                    <td>
-                      <button className="link" onClick={() => onEdit(l)}>
-                        Edit
-                      </button>
-                    </td>
-                  </tr>
+                  <LeadRow
+                    key={l.emailLower}
+                    lead={l}
+                    selected={selectedIds.has(l.emailLower)}
+                    onToggle={toggleOne}
+                    onEdit={onEdit}
+                  />
                 ))}
               </tbody>
             </table>
@@ -677,6 +787,56 @@ function FilterSelect({ label, value, options, onChange }) {
     </select>
   );
 }
+
+const LeadRow = memo(function LeadRow({ lead, selected, onToggle, onEdit }) {
+  const l = lead;
+  return (
+    <tr className="lead-row">
+      <td>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(l.emailLower)}
+        />
+      </td>
+      <td className="mono small">{l.email}</td>
+      <td className="small">{l.name || "—"}</td>
+      <td className="small">{l.designation || "—"}</td>
+      <td className="small">{l.company || "—"}</td>
+      <td className="small">{l.location || "—"}</td>
+      <td>
+        <span
+          className="status-chip"
+          style={{ background: STATUS_COLORS[l.status] || "#888" }}
+        >
+          {l.status}
+        </span>
+      </td>
+      <td>
+        <div className="cat-row tight">
+          {(l.categories || []).slice(0, 3).map((c) => (
+            <span
+              key={c}
+              className="cat-chip tight"
+              style={{ background: CAT_COLORS[c] || "#888" }}
+            >
+              {c}
+            </span>
+          ))}
+          {(l.categories || []).length > 3 && (
+            <span className="muted small">+{l.categories.length - 3}</span>
+          )}
+        </div>
+      </td>
+      <td className="muted small">{fmtDate(l.addedAt)}</td>
+      <td>
+        <button className="link" onClick={() => onEdit(l)}>
+          Edit
+        </button>
+      </td>
+    </tr>
+  );
+});
 
 function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showToast }) {
   const [dragging, setDragging] = useState(false);

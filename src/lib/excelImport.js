@@ -1,5 +1,11 @@
-import * as XLSX from "xlsx";
 import { normalizeLead } from "./leads.js";
+
+let _XLSX = null;
+async function loadXLSX() {
+  if (_XLSX) return _XLSX;
+  _XLSX = await import("xlsx");
+  return _XLSX;
+}
 
 const FIELD_PATTERNS = {
   email: /^(e[\-_ ]?mail|email[\s_-]?address|mail|email\s*id|contact[\s_-]?email)$/i,
@@ -49,6 +55,7 @@ function parseCategories(raw) {
 }
 
 export async function parseExcelFile(file) {
+  const XLSX = await loadXLSX();
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: "array" });
   const sheets = wb.SheetNames;

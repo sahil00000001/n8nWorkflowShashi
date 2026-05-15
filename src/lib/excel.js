@@ -1,4 +1,9 @@
-import * as XLSX from "xlsx";
+let _XLSX = null;
+async function loadXLSX() {
+  if (_XLSX) return _XLSX;
+  _XLSX = await import("xlsx");
+  return _XLSX;
+}
 
 function autoWidths(rows) {
   if (!rows.length) return [];
@@ -50,7 +55,7 @@ function leadRow(l, i) {
   };
 }
 
-function buildLeadsSheet(leads) {
+function buildLeadsSheet(XLSX, leads) {
   const rows = leads.map((l, i) => leadRow(l, i));
   const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = autoWidths(rows);
@@ -58,7 +63,7 @@ function buildLeadsSheet(leads) {
   return ws;
 }
 
-function buildBreakdown(leads, key, label) {
+function buildBreakdown(XLSX, leads, key, label) {
   const counts = {};
   for (const l of leads) {
     const raw = l[key];
@@ -78,19 +83,20 @@ function buildBreakdown(leads, key, label) {
   return ws;
 }
 
-export function exportLeadsToExcel(leads, filename) {
+export async function exportLeadsToExcel(leads, filename) {
+  const XLSX = await loadXLSX();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(leads), "Leads");
+  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(XLSX, leads), "Leads");
 
-  const byDesignation = buildBreakdown(leads, "designation", "Designation");
+  const byDesignation = buildBreakdown(XLSX, leads, "designation", "Designation");
   if (byDesignation) XLSX.utils.book_append_sheet(wb, byDesignation, "By Designation");
-  const byCompany = buildBreakdown(leads, "company", "Company");
+  const byCompany = buildBreakdown(XLSX, leads, "company", "Company");
   if (byCompany) XLSX.utils.book_append_sheet(wb, byCompany, "By Company");
-  const byLocation = buildBreakdown(leads, "location", "Location");
+  const byLocation = buildBreakdown(XLSX, leads, "location", "Location");
   if (byLocation) XLSX.utils.book_append_sheet(wb, byLocation, "By Location");
-  const byCategory = buildBreakdown(leads, "categories", "Category");
+  const byCategory = buildBreakdown(XLSX, leads, "categories", "Category");
   if (byCategory) XLSX.utils.book_append_sheet(wb, byCategory, "By Category");
-  const byStatus = buildBreakdown(leads, "status", "Status");
+  const byStatus = buildBreakdown(XLSX, leads, "status", "Status");
   if (byStatus) XLSX.utils.book_append_sheet(wb, byStatus, "By Status");
 
   const summary = [
@@ -109,9 +115,10 @@ export function exportLeadsToExcel(leads, filename) {
   XLSX.writeFile(wb, name);
 }
 
-export function exportEntriesToExcel(entries, filename) {
+export async function exportEntriesToExcel(entries, filename) {
+  const XLSX = await loadXLSX();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(entries), "Leads");
+  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(XLSX, entries), "Leads");
   XLSX.writeFile(wb, filename || `leads_batch_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
