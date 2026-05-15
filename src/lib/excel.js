@@ -28,66 +28,91 @@ function formatDate(d) {
   }
 }
 
-export function exportHistoryToExcel(history, filename) {
-  const wb = XLSX.utils.book_new();
-
-  const rows = history.map((h, i) => ({
+function leadRow(l, i) {
+  return {
     "#": i + 1,
-    Email: h.email || "",
-    Recruiter: h.recruiter || "",
-    Role: h.role || "",
-    Categories: (h.categories || []).join(", "),
-    "Added At": formatDate(h.addedAt),
-    "Generated At": formatDate(h.generatedAt),
-    "Source File": h.sourceFile || "",
-    Legacy: h.legacy ? "yes" : "",
-  }));
-  const ws1 = XLSX.utils.json_to_sheet(rows);
-  ws1["!cols"] = autoWidths(rows);
-  XLSX.utils.book_append_sheet(wb, ws1, "History");
+    Email: l.email || "",
+    Name: l.name || "",
+    Designation: l.designation || "",
+    Company: l.company || "",
+    Location: l.location || "",
+    "LinkedIn URL": l.linkedinUrl || "",
+    Phone: l.phone || "",
+    "Hiring Role": l.role || "",
+    Categories: (l.categories || []).join(", "),
+    Status: l.status || "",
+    Source: l.source || "",
+    "Source File": l.sourceFile || "",
+    Notes: l.notes || "",
+    "Added At": formatDate(l.addedAt),
+    "Updated At": formatDate(l.updatedAt),
+    "Generated At": formatDate(l.generatedAt),
+  };
+}
 
-  const byCat = {};
-  for (const h of history) {
-    for (const c of h.categories && h.categories.length ? h.categories : ["uncategorized"]) {
-      byCat[c] = (byCat[c] || 0) + 1;
+function buildLeadsSheet(leads) {
+  const rows = leads.map((l, i) => leadRow(l, i));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = autoWidths(rows);
+  if (rows.length) ws["!autofilter"] = { ref: ws["!ref"] };
+  return ws;
+}
+
+function buildBreakdown(leads, key, label) {
+  const counts = {};
+  for (const l of leads) {
+    const raw = l[key];
+    if (Array.isArray(raw)) {
+      for (const v of raw.length ? raw : ["—"]) counts[v] = (counts[v] || 0) + 1;
+    } else {
+      const v = (raw || "—").toString().trim() || "—";
+      counts[v] = (counts[v] || 0) + 1;
     }
   }
-  const catRows = Object.entries(byCat)
+  const rows = Object.entries(counts)
     .sort((a, b) => b[1] - a[1])
-    .map(([cat, count]) => ({ Category: cat, Count: count }));
-  if (catRows.length) {
-    const ws2 = XLSX.utils.json_to_sheet(catRows);
-    ws2["!cols"] = autoWidths(catRows);
-    XLSX.utils.book_append_sheet(wb, ws2, "By Category");
-  }
+    .map(([k, c]) => ({ [label]: k, Count: c }));
+  if (!rows.length) return null;
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = autoWidths(rows);
+  return ws;
+}
+
+export function exportLeadsToExcel(leads, filename) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(leads), "Leads");
+
+  const byDesignation = buildBreakdown(leads, "designation", "Designation");
+  if (byDesignation) XLSX.utils.book_append_sheet(wb, byDesignation, "By Designation");
+  const byCompany = buildBreakdown(leads, "company", "Company");
+  if (byCompany) XLSX.utils.book_append_sheet(wb, byCompany, "By Company");
+  const byLocation = buildBreakdown(leads, "location", "Location");
+  if (byLocation) XLSX.utils.book_append_sheet(wb, byLocation, "By Location");
+  const byCategory = buildBreakdown(leads, "categories", "Category");
+  if (byCategory) XLSX.utils.book_append_sheet(wb, byCategory, "By Category");
+  const byStatus = buildBreakdown(leads, "status", "Status");
+  if (byStatus) XLSX.utils.book_append_sheet(wb, byStatus, "By Status");
 
   const summary = [
-    { Metric: "Total emails in history", Value: history.length },
-    { Metric: "Generated (queued)", Value: history.filter((h) => h.generatedAt).length },
-    { Metric: "Migrated from legacy", Value: history.filter((h) => h.legacy).length },
+    { Metric: "Total leads", Value: leads.length },
+    { Metric: "Queued / Generated", Value: leads.filter((l) => l.generatedAt).length },
+    { Metric: "From Excel import", Value: leads.filter((l) => l.source === "excel").length },
+    { Metric: "From LinkedIn", Value: leads.filter((l) => l.source === "linkedin").length },
+    { Metric: "Manual / migrated", Value: leads.filter((l) => l.source !== "excel" && l.source !== "linkedin").length },
     { Metric: "Export date", Value: formatDate(new Date().toISOString()) },
   ];
-  const ws3 = XLSX.utils.json_to_sheet(summary);
-  ws3["!cols"] = autoWidths(summary);
-  XLSX.utils.book_append_sheet(wb, ws3, "Summary");
+  const wsSummary = XLSX.utils.json_to_sheet(summary);
+  wsSummary["!cols"] = autoWidths(summary);
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
 
-  const name =
-    filename || `job_mailer_history_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const name = filename || `leads_${new Date().toISOString().slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, name);
 }
 
 export function exportEntriesToExcel(entries, filename) {
   const wb = XLSX.utils.book_new();
-  const rows = entries.map((e, i) => ({
-    "#": i + 1,
-    Email: e.email,
-    Recruiter: e.recruiter,
-    Role: e.role,
-    Categories: (e.categories || []).join(", "),
-    Status: e.status || "new",
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws["!cols"] = autoWidths(rows);
-  XLSX.utils.book_append_sheet(wb, ws, "Entries");
-  XLSX.writeFile(wb, filename || `job_mailer_batch_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  XLSX.utils.book_append_sheet(wb, buildLeadsSheet(entries), "Leads");
+  XLSX.writeFile(wb, filename || `leads_batch_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
+
+export const exportHistoryToExcel = exportLeadsToExcel;
