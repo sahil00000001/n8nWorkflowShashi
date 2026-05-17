@@ -1,4 +1,5 @@
-import { getCategories, extractRole, cleanName } from "./parsers.js";
+import { extractRole, cleanName } from "./parsers.js";
+import { getPack, DEFAULT_OWNER } from "./contentPacks/index.js";
 
 export const STATUS_LIST = ["new", "queued", "sent", "responded", "rejected"];
 
@@ -10,9 +11,10 @@ export const STATUS_COLORS = {
   rejected: "#D85A30",
 };
 
-export function emptyLead() {
+export function emptyLead(ownerId = DEFAULT_OWNER) {
   const now = new Date().toISOString();
   return {
+    owner: ownerId,
     email: "",
     emailLower: "",
     name: "",
@@ -33,9 +35,10 @@ export function emptyLead() {
   };
 }
 
-export function normalizeLead(input) {
-  const base = emptyLead();
+export function normalizeLead(input, ownerId) {
+  const base = emptyLead(ownerId || input.owner || DEFAULT_OWNER);
   const merged = { ...base, ...input };
+  merged.owner = merged.owner || ownerId || DEFAULT_OWNER;
   merged.email = String(merged.email || "").trim();
   merged.emailLower = merged.email.toLowerCase();
   merged.name = String(merged.name || "").trim();
@@ -53,25 +56,26 @@ export function normalizeLead(input) {
   return merged;
 }
 
-export function leadFromLinkedInItem(item, sourceFile) {
+export function leadFromLinkedInItem(item, sourceFile, ownerId) {
   const email = String(item.email || "").trim();
   if (!email || !email.includes("@")) return null;
-  const lead = emptyLead();
+  const pack = getPack(ownerId);
+  const lead = emptyLead(ownerId);
   lead.email = email;
   lead.emailLower = email.toLowerCase();
   lead.name = cleanName(item.rawName || item.name || "");
   lead.role = extractRole(item.postText || item.post_text || "");
-  lead.categories = getCategories(item.postText || item.post_text || "");
+  lead.categories = pack.detectCategories(item.postText || item.post_text || "");
   lead.source = "linkedin";
   lead.sourceFile = sourceFile || "";
   lead.status = "new";
   return lead;
 }
 
-export function mergeLeads(existing, incoming) {
+export function mergeLeads(existing, incoming, ownerId) {
   const byEmail = new Map();
   for (const l of existing) {
-    const norm = normalizeLead(l);
+    const norm = normalizeLead(l, ownerId);
     if (norm.emailLower) byEmail.set(norm.emailLower, norm);
   }
   let added = 0;
@@ -79,7 +83,7 @@ export function mergeLeads(existing, incoming) {
   const duplicates = [];
   const now = new Date().toISOString();
   for (const raw of incoming) {
-    const lead = normalizeLead(raw);
+    const lead = normalizeLead(raw, ownerId);
     if (!lead.emailLower) continue;
     const prev = byEmail.get(lead.emailLower);
     if (!prev) {
@@ -144,7 +148,7 @@ export function filterLeads(leads, filters) {
 
 export function migrateV2HistoryToLeads(v2History) {
   return v2History.map((h) => {
-    const lead = emptyLead();
+    const lead = emptyLead("shashi");
     lead.email = h.email || "";
     lead.emailLower = (h.emailLower || h.email || "").toLowerCase();
     lead.name = h.recruiter || "";

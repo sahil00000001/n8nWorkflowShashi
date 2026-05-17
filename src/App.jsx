@@ -1,12 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo, memo } from "react";
-import { CATEGORY_LIST, CAT_COLORS } from "./lib/parsers.js";
 import { buildWorkflow } from "./lib/workflow.js";
 import {
   loadLeads,
   saveLeads,
   clearAllLeads,
-  loadProfile,
-  saveProfile,
+  loadProfiles,
+  saveProfiles,
+  loadCurrentOwner,
+  saveCurrentOwner,
 } from "./lib/storage.js";
 import { exportLeadsToExcel } from "./lib/excel.js";
 import {
@@ -24,27 +25,13 @@ import {
   fetchAllLeads,
   upsertLeads,
   deleteLeadsByEmail,
-  deleteAllLeads as cloudDeleteAll,
+  deleteAllLeadsForOwner,
   indexLeads,
   diffLeads,
 } from "./lib/cloudSync.js";
+import { getPack, listPacks, OWNER_IDS } from "./lib/contentPacks/index.js";
 
 const BATCH_SIZE = 400;
-
-const DEFAULT_PROFILE = {
-  name: "Shashi Vashisht",
-  email: "shashivash.bba2023ea@rdias.ac.in",
-  phone: "9818710014",
-  linkedin: "https://www.linkedin.com/in/shashi-vashisht-0a13a5348/",
-  location: "New Delhi",
-  resumeLink:
-    "https://drive.google.com/file/d/1EgfW4MOmNTUT7H9mYQSrTAXUP4lBvaRA/view?usp=sharing",
-  gradYear: "2026",
-  degree: "BBA",
-  college: "RDIAS",
-  experience: "",
-  jobType: "fresher",
-};
 
 const PROFILE_FIELDS = [
   ["name", "Full name"],
@@ -70,9 +57,10 @@ function fmtDate(d) {
 }
 
 export default function App() {
+  const [currentOwner, setCurrentOwner] = useState(null);
   const [tab, setTab] = useState("dashboard");
-  const [profile, setProfile] = useState(DEFAULT_PROFILE);
-  const [leads, setLeads] = useState([]);
+  const [profiles, setProfiles] = useState(null);
+  const [allLeads, setAllLeads] = useState([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -88,8 +76,11 @@ export default function App() {
 
   useEffect(() => {
     const local = loadLeads();
-    setLeads(local);
-    setProfile(loadProfile(DEFAULT_PROFILE));
+    const profs = loadProfiles();
+    const saved = loadCurrentOwner();
+    setAllLeads(local);
+    setProfiles(profs);
+    setCurrentOwner(saved);
     lastSyncedMapRef.current = indexLeads(local);
     setStorageLoaded(true);
 
@@ -102,7 +93,7 @@ export default function App() {
             await upsertLeads(local);
             lastSyncedMapRef.current = indexLeads(local);
           } else {
-            setLeads(cloud);
+            setAllLeads(cloud);
             saveLeads(cloud);
             lastSyncedMapRef.current = indexLeads(cloud);
           }
@@ -117,23 +108,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (storageLoaded) saveProfile(profile);
-  }, [profile, storageLoaded]);
+    if (storageLoaded && profiles) saveProfiles(profiles);
+  }, [profiles, storageLoaded]);
 
   useEffect(() => {
     if (!storageLoaded) return;
-    saveLeads(leads);
+    saveLeads(allLeads);
     if (!isCloudConfigured()) return;
 
     const handle = setTimeout(async () => {
-      const nextMap = indexLeads(leads);
+      const nextMap = indexLeads(allLeads);
       const { toUpsert, toDelete } = diffLeads(lastSyncedMapRef.current, nextMap);
       if (toUpsert.length === 0 && toDelete.length === 0) return;
 
       setSyncStatus("syncing");
       try {
         if (toUpsert.length) await upsertLeads(toUpsert);
-        if (toDelete.length) await deleteLeadsByEmail(toDelete);
+        if (toDelete.length) {
+          const byOwner = new Map();
+          for (const k of toDelete) {
+            const prev = lastSyncedMapRef.current.get(k);
+            const owner = prev?.owner || currentOwner;
+            if (!byOwner.has(owner)) byOwner.set(owner, []);
+            byOwner.get(owner).push(k);
+          }
+          for (const [owner, keys] of byOwner) {
+            await deleteLeadsByEmail(owner, keys);
+          }
+        }
         lastSyncedMapRef.current = nextMap;
         setSyncStatus("synced");
         setLastSyncedAt(Date.now());
@@ -144,7 +146,7 @@ export default function App() {
     }, 800);
 
     return () => clearTimeout(handle);
-  }, [leads, storageLoaded]);
+  }, [allLeads, storageLoaded, currentOwner]);
 
   const manualResync = async () => {
     if (!isCloudConfigured()) return;
@@ -152,7 +154,7 @@ export default function App() {
     try {
       const cloud = await fetchAllLeads();
       if (cloud) {
-        setLeads(cloud);
+        setAllLeads(cloud);
         saveLeads(cloud);
         lastSyncedMapRef.current = indexLeads(cloud);
       }
@@ -169,20 +171,82 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const ingestLeads = (incoming, sourceLabel) => {
-    const { leads: merged, added, merged: updated, duplicates } = mergeLeads(
-      leads,
-      incoming
-    );
-    setLeads(merged);
-    showToast(
-      `${sourceLabel}: ${added} new · ${updated} updated existing · ${duplicates.length} duplicates merged`
-    );
-    return { added, updated, duplicates: duplicates.length };
+  const handlePickUser = (ownerId) => {
+    setCurrentOwner(ownerId);
+    saveCurrentOwner(ownerId);
+    setSelectedIds(new Set());
+    setEditingLead(null);
+    setImportPreview(null);
+    setGenerated([]);
+    setTab("dashboard");
   };
 
+  const leads = useMemo(
+    () => allLeads.filter((l) => l.owner === currentOwner),
+    [allLeads, currentOwner]
+  );
+
+  const pack = currentOwner ? getPack(currentOwner) : null;
+  const profile = currentOwner && profiles ? profiles[currentOwner] : null;
+
+  const setProfile = (updater) => {
+    setProfiles((prev) => ({
+      ...prev,
+      [currentOwner]: typeof updater === "function" ? updater(prev[currentOwner]) : updater,
+    }));
+  };
+
+  const ingestLeads = (incoming, sourceLabel) => {
+    const ownLeads = allLeads.filter((l) => l.owner === currentOwner);
+    const otherLeads = allLeads.filter((l) => l.owner !== currentOwner);
+    const tagged = incoming.map((l) => ({ ...l, owner: currentOwner }));
+    const { leads: merged, added, merged: updated, duplicates } = mergeLeads(
+      ownLeads,
+      tagged,
+      currentOwner
+    );
+    setAllLeads([...otherLeads, ...merged]);
+    showToast(
+      `${sourceLabel}: ${added} new · ${updated} updated · ${duplicates.length} merged`
+    );
+  };
+
+  const updateOneLead = (updated) => {
+    const norm = normalizeLead({ ...updated, owner: currentOwner }, currentOwner);
+    norm.updatedAt = new Date().toISOString();
+    setAllLeads((prev) =>
+      prev.map((l) =>
+        l.owner === currentOwner && l.emailLower === editingLead.emailLower
+          ? norm
+          : l
+      )
+    );
+  };
+
+  const deleteOneLead = (emailLower) => {
+    setAllLeads((prev) =>
+      prev.filter((l) => !(l.owner === currentOwner && l.emailLower === emailLower))
+    );
+  };
+
+  const clearAllForCurrent = () => {
+    const otherLeads = allLeads.filter((l) => l.owner !== currentOwner);
+    setAllLeads(otherLeads);
+    if (isCloudConfigured()) {
+      deleteAllLeadsForOwner(currentOwner).catch((e) => console.error(e));
+    }
+  };
+
+  if (!storageLoaded || !profiles) {
+    return <div className="app"><div className="loading-screen">Loading…</div></div>;
+  }
+
+  if (!currentOwner) {
+    return <SplashScreen onPick={handlePickUser} />;
+  }
+
   return (
-    <div className="app">
+    <div className="app" data-owner={currentOwner}>
       {toast && <Toast key={toast.id} msg={toast.msg} type={toast.type} />}
       {confirm && (
         <ConfirmDialog
@@ -197,22 +261,15 @@ export default function App() {
       {editingLead && (
         <LeadDrawer
           lead={editingLead}
+          pack={pack}
           onClose={() => setEditingLead(null)}
           onSave={(updated) => {
-            setLeads((prev) =>
-              prev.map((l) =>
-                l.emailLower === editingLead.emailLower
-                  ? { ...normalizeLead(updated), updatedAt: new Date().toISOString() }
-                  : l
-              )
-            );
+            updateOneLead(updated);
             setEditingLead(null);
             showToast("Lead updated");
           }}
           onDelete={() => {
-            setLeads((prev) =>
-              prev.filter((l) => l.emailLower !== editingLead.emailLower)
-            );
+            deleteOneLead(editingLead.emailLower);
             setEditingLead(null);
             showToast("Lead deleted");
           }}
@@ -221,7 +278,9 @@ export default function App() {
 
       <Header
         leads={leads}
-        loaded={storageLoaded}
+        pack={pack}
+        currentOwner={currentOwner}
+        onSwitch={handlePickUser}
         syncStatus={syncStatus}
         lastSyncedAt={lastSyncedAt}
         onResync={manualResync}
@@ -247,34 +306,26 @@ export default function App() {
 
       <div className="tab-content">
         {tab === "dashboard" && (
-          <DashboardTab leads={leads} onJump={(t) => setTab(t)} />
+          <DashboardTab leads={leads} pack={pack} onJump={(t) => setTab(t)} />
         )}
         {tab === "leads" && (
           <LeadsTab
             leads={leads}
-            setLeads={setLeads}
+            pack={pack}
+            allLeads={allLeads}
+            setAllLeads={setAllLeads}
+            currentOwner={currentOwner}
             onEdit={setEditingLead}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
             onClearAll={() =>
               setConfirm({
-                title: "Delete all leads?",
-                message: `This permanently removes all ${leads.length} leads from ${
-                  isCloudConfigured() ? "cloud + this browser" : "this browser"
-                }. Cannot be undone.`,
-                onConfirm: async () => {
-                  clearAllLeads();
-                  setLeads([]);
+                title: `Delete all of ${pack.shortName}'s leads?`,
+                message: `This permanently removes all ${leads.length} leads for ${pack.displayName}. Cannot be undone.`,
+                onConfirm: () => {
+                  clearAllForCurrent();
                   setSelectedIds(new Set());
-                  if (isCloudConfigured()) {
-                    try {
-                      await cloudDeleteAll();
-                      lastSyncedMapRef.current = new Map();
-                    } catch (e) {
-                      console.error(e);
-                    }
-                  }
-                  showToast("All leads cleared");
+                  showToast(`Cleared all leads for ${pack.shortName}`);
                 },
               })
             }
@@ -283,6 +334,8 @@ export default function App() {
         {tab === "import" && (
           <ImportTab
             leads={leads}
+            pack={pack}
+            currentOwner={currentOwner}
             ingestLeads={ingestLeads}
             importPreview={importPreview}
             setImportPreview={setImportPreview}
@@ -292,7 +345,10 @@ export default function App() {
         {tab === "generate" && (
           <GenerateTab
             leads={leads}
-            setLeads={setLeads}
+            allLeads={allLeads}
+            setAllLeads={setAllLeads}
+            pack={pack}
+            currentOwner={currentOwner}
             profile={profile}
             generated={generated}
             setGenerated={setGenerated}
@@ -302,46 +358,79 @@ export default function App() {
           />
         )}
         {tab === "profile" && (
-          <ProfileTab
-            profile={profile}
-            setProfile={setProfile}
-          />
+          <ProfileTab profile={profile} pack={pack} setProfile={setProfile} />
         )}
       </div>
     </div>
   );
 }
 
-function Header({ leads, loaded, syncStatus, lastSyncedAt, onResync }) {
+function SplashScreen({ onPick }) {
+  const packs = listPacks();
   return (
-    <header className="hero">
+    <div className="splash">
+      <div className="splash-content">
+        <h1 className="splash-title">Who's applying today?</h1>
+        <p className="splash-subtitle">Each user has separate leads, profile, and email templates.</p>
+        <div className="splash-cards">
+          {packs.map((p) => (
+            <button
+              key={p.id}
+              className="splash-card"
+              style={{ "--accent": p.color }}
+              onClick={() => onPick(p.id)}
+            >
+              <div className="splash-emoji">{p.emoji}</div>
+              <div className="splash-card-name">{p.displayName}</div>
+              <div className="splash-card-tagline">{p.tagline}</div>
+              <div className="splash-card-cta">Enter →</div>
+            </button>
+          ))}
+        </div>
+        <p className="splash-footer muted small">
+          You can switch users anytime from the header.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Header({ leads, pack, currentOwner, onSwitch, syncStatus, lastSyncedAt, onResync }) {
+  return (
+    <header className="hero" style={{ "--hero-accent": pack.color }}>
       <div className="hero-bg" />
       <div className="hero-content">
         <div>
+          <div className="hero-eyebrow">
+            <span className="hero-emoji">{pack.emoji}</span>
+            <span>{pack.displayName}</span>
+          </div>
           <h1 className="title">Lead Manager</h1>
-          <p className="subtitle">
-            One database. Excel + LinkedIn JSON in. n8n workflows + Excel out.
-          </p>
+          <p className="subtitle">{pack.tagline}</p>
           <SyncBadge status={syncStatus} lastSyncedAt={lastSyncedAt} onResync={onResync} />
         </div>
-        {loaded && (
-          <div className="hero-stats">
-            <HeroStat label="Total leads" value={leads.length} />
-            <HeroStat
-              label="From Excel"
-              value={leads.filter((l) => l.source === "excel").length}
-            />
-            <HeroStat
-              label="From LinkedIn"
-              value={leads.filter((l) => l.source === "linkedin").length}
-            />
-            <HeroStat
-              label="Queued"
-              value={leads.filter((l) => l.generatedAt).length}
-              accent
-            />
+        <div className="hero-right">
+          <div className="user-switch">
+            {OWNER_IDS.map((id) => {
+              const p = getPack(id);
+              return (
+                <button
+                  key={id}
+                  className={`user-pill ${id === currentOwner ? "active" : ""}`}
+                  onClick={() => id !== currentOwner && onSwitch(id)}
+                  title={`Switch to ${p.displayName}`}
+                >
+                  <span className="user-pill-emoji">{p.emoji}</span>
+                  <span>{p.shortName}</span>
+                </button>
+              );
+            })}
           </div>
-        )}
+          <div className="hero-stats">
+            <HeroStat label="Total" value={leads.length} />
+            <HeroStat label="Queued" value={leads.filter((l) => l.generatedAt).length} accent />
+          </div>
+        </div>
       </div>
     </header>
   );
@@ -356,9 +445,8 @@ function SyncBadge({ status, lastSyncedAt, onResync }) {
   }, [lastSyncedAt]);
 
   const ago = lastSyncedAt ? timeAgo(lastSyncedAt) : null;
-
   const labels = {
-    "local-only": "Local only — set up cloud sync in README",
+    "local-only": "Local only — set up cloud sync",
     idle: "Connecting…",
     syncing: "Syncing…",
     synced: ago ? `Synced ${ago}` : "Synced",
@@ -370,13 +458,11 @@ function SyncBadge({ status, lastSyncedAt, onResync }) {
     synced: "ok",
     error: "error",
   };
-
   return (
     <button
       className={`sync-badge ${classes[status] || ""}`}
       onClick={status === "error" ? onResync : undefined}
       disabled={status !== "error"}
-      title={status === "local-only" ? "Add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY to enable" : ""}
     >
       <span className={`sync-dot ${status}`} />
       {labels[status] || status}
@@ -404,7 +490,7 @@ function HeroStat({ label, value, accent }) {
   );
 }
 
-function DashboardTab({ leads, onJump }) {
+function DashboardTab({ leads, pack, onJump }) {
   const byDesignation = useMemo(() => buildBreakdown(leads, "designation"), [leads]);
   const byCompany = useMemo(() => buildBreakdown(leads, "company"), [leads]);
   const byLocation = useMemo(() => buildBreakdown(leads, "location"), [leads]);
@@ -414,9 +500,9 @@ function DashboardTab({ leads, onJump }) {
   if (leads.length === 0) {
     return (
       <section className="card empty fade-in">
-        <h2>Welcome</h2>
+        <h2>Welcome, {pack.shortName}!</h2>
         <p className="muted" style={{ marginBottom: 20 }}>
-          Start by importing your existing leads from Excel, or drop a LinkedIn JSON export.
+          No leads yet. Import from Excel or LinkedIn JSON to get started.
         </p>
         <button className="primary big" onClick={() => onJump("import")}>
           Go to Import →
@@ -428,23 +514,21 @@ function DashboardTab({ leads, onJump }) {
   return (
     <div className="dashboard fade-in">
       <div className="grid-2">
-        <BreakdownCard title="By Designation" data={byDesignation} accent="#378ADD" />
-        <BreakdownCard title="By Company" data={byCompany} accent="#1D9E75" />
+        <BreakdownCard title="By Designation" data={byDesignation} accent={pack.color} />
+        <BreakdownCard title="By Company" data={byCompany} accent={pack.color} />
       </div>
       <div className="grid-2">
-        <BreakdownCard title="By Location" data={byLocation} accent="#BA7517" />
-        <BreakdownCard title="By Status" data={byStatus} accent="#7F77DD" colors={STATUS_COLORS} />
+        <BreakdownCard title="By Location" data={byLocation} accent={pack.color} />
+        <BreakdownCard title="By Status" data={byStatus} accent={pack.color} colors={STATUS_COLORS} />
       </div>
-      <BreakdownCard title="By Category" data={byCategory} accent="#D85A30" colors={CAT_COLORS} />
+      <BreakdownCard title="By Category" data={byCategory} accent={pack.color} colors={pack.categoryColors} />
 
       <section className="card slide-up">
         <h3 className="card-title">Recent leads</h3>
         <div className="recent-grid">
           {leads
             .slice()
-            .sort((a, b) =>
-              String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
-            )
+            .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
             .slice(0, 6)
             .map((l) => (
               <div key={l.emailLower} className="recent-card">
@@ -467,9 +551,7 @@ function buildBreakdown(leads, key) {
     const v = (l[key] || "").trim() || "—";
     counts[v] = (counts[v] || 0) + 1;
   }
-  return Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12);
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
 }
 
 function buildArrayBreakdown(leads, key) {
@@ -479,9 +561,7 @@ function buildArrayBreakdown(leads, key) {
     if (!arr.length) counts["—"] = (counts["—"] || 0) + 1;
     for (const v of arr) counts[v] = (counts[v] || 0) + 1;
   }
-  return Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12);
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
 }
 
 function BreakdownCard({ title, data, accent, colors }) {
@@ -495,16 +575,11 @@ function BreakdownCard({ title, data, accent, colors }) {
         <div className="bar-list">
           {data.map(([label, count]) => (
             <div className="bar-row" key={label}>
-              <div className="bar-label" title={label}>
-                {label}
-              </div>
+              <div className="bar-label" title={label}>{label}</div>
               <div className="bar-track">
                 <div
                   className="bar-fill"
-                  style={{
-                    width: `${(count / max) * 100}%`,
-                    background: colors?.[label] || accent,
-                  }}
+                  style={{ width: `${(count / max) * 100}%`, background: colors?.[label] || accent }}
                 />
               </div>
               <div className="bar-count">{count}</div>
@@ -516,7 +591,7 @@ function BreakdownCard({ title, data, accent, colors }) {
   );
 }
 
-function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClearAll }) {
+function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, onEdit, selectedIds, setSelectedIds, onClearAll }) {
   const [filters, setFilters] = useState({
     search: "",
     designation: "all",
@@ -534,23 +609,18 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
   const locations = useMemo(() => uniqueValues(leads, "location"), [leads]);
 
   const filtered = useMemo(() => filterLeads(leads, filters), [leads, filters]);
-
   useEffect(() => setPage(0), [filters]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pageRows = filtered.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
-  const allOnPageSelected =
-    pageRows.length > 0 && pageRows.every((l) => selectedIds.has(l.emailLower));
+  const allOnPageSelected = pageRows.length > 0 && pageRows.every((l) => selectedIds.has(l.emailLower));
 
   const toggleAllOnPage = () => {
     const next = new Set(selectedIds);
-    if (allOnPageSelected) {
-      for (const l of pageRows) next.delete(l.emailLower);
-    } else {
-      for (const l of pageRows) next.add(l.emailLower);
-    }
+    if (allOnPageSelected) for (const l of pageRows) next.delete(l.emailLower);
+    else for (const l of pageRows) next.add(l.emailLower);
     setSelectedIds(next);
   };
 
@@ -569,36 +639,30 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
   const updateStatusForSelected = (status) => {
     if (selectedIds.size === 0) return;
     const now = new Date().toISOString();
-    setLeads((prev) =>
+    setAllLeads((prev) =>
       prev.map((l) =>
-        selectedIds.has(l.emailLower) ? { ...l, status, updatedAt: now } : l
+        l.owner === currentOwner && selectedIds.has(l.emailLower)
+          ? { ...l, status, updatedAt: now }
+          : l
       )
     );
   };
 
   const deleteSelected = () => {
     if (selectedIds.size === 0) return;
-    setLeads((prev) => prev.filter((l) => !selectedIds.has(l.emailLower)));
+    setAllLeads((prev) =>
+      prev.filter((l) => !(l.owner === currentOwner && selectedIds.has(l.emailLower)))
+    );
     setSelectedIds(new Set());
   };
 
-  const downloadFiltered = () => {
-    exportLeadsToExcel(filtered);
-  };
-
-  const downloadAll = () => {
-    exportLeadsToExcel(leads);
-  };
+  const downloadFiltered = () => exportLeadsToExcel(filtered, `${currentOwner}_leads_filtered_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const downloadAll = () => exportLeadsToExcel(leads, `${currentOwner}_leads_${new Date().toISOString().slice(0, 10)}.xlsx`);
 
   const resetFilters = () =>
     setFilters({
-      search: "",
-      designation: "all",
-      company: "all",
-      location: "all",
-      category: "all",
-      status: "all",
-      source: "all",
+      search: "", designation: "all", company: "all", location: "all",
+      category: "all", status: "all", source: "all",
     });
 
   return (
@@ -613,46 +677,20 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
             className="search-input"
           />
           <div className="filter-row">
-            <FilterSelect
-              label="Designation"
-              value={filters.designation}
-              options={designations}
-              onChange={(v) => setFilters({ ...filters, designation: v })}
-            />
-            <FilterSelect
-              label="Company"
-              value={filters.company}
-              options={companies}
-              onChange={(v) => setFilters({ ...filters, company: v })}
-            />
-            <FilterSelect
-              label="Location"
-              value={filters.location}
-              options={locations}
-              onChange={(v) => setFilters({ ...filters, location: v })}
-            />
-            <FilterSelect
-              label="Category"
-              value={filters.category}
-              options={CATEGORY_LIST}
-              onChange={(v) => setFilters({ ...filters, category: v })}
-            />
-            <FilterSelect
-              label="Status"
-              value={filters.status}
-              options={STATUS_LIST}
-              onChange={(v) => setFilters({ ...filters, status: v })}
-            />
-            <FilterSelect
-              label="Source"
-              value={filters.source}
-              options={["excel", "linkedin", "manual", "legacy"]}
-              onChange={(v) => setFilters({ ...filters, source: v })}
-            />
+            <FilterSelect label="Designation" value={filters.designation} options={designations}
+              onChange={(v) => setFilters({ ...filters, designation: v })} />
+            <FilterSelect label="Company" value={filters.company} options={companies}
+              onChange={(v) => setFilters({ ...filters, company: v })} />
+            <FilterSelect label="Location" value={filters.location} options={locations}
+              onChange={(v) => setFilters({ ...filters, location: v })} />
+            <FilterSelect label="Category" value={filters.category} options={pack.categories}
+              onChange={(v) => setFilters({ ...filters, category: v })} />
+            <FilterSelect label="Status" value={filters.status} options={STATUS_LIST}
+              onChange={(v) => setFilters({ ...filters, status: v })} />
+            <FilterSelect label="Source" value={filters.source} options={["excel", "linkedin", "manual", "legacy"]}
+              onChange={(v) => setFilters({ ...filters, source: v })} />
             {Object.values(filters).some((v) => v && v !== "all") && (
-              <button className="link" onClick={resetFilters}>
-                Reset
-              </button>
+              <button className="link" onClick={resetFilters}>Reset</button>
             )}
           </div>
         </div>
@@ -667,28 +705,17 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
           <div className="action-cluster">
             {selectedIds.size > 0 && (
               <>
-                <select
-                  className="select"
-                  defaultValue=""
+                <select className="select" defaultValue=""
                   onChange={(e) => {
                     if (e.target.value) {
                       updateStatusForSelected(e.target.value);
                       e.target.value = "";
                     }
-                  }}
-                >
-                  <option value="" disabled>
-                    Set status…
-                  </option>
-                  {STATUS_LIST.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
+                  }}>
+                  <option value="" disabled>Set status…</option>
+                  {STATUS_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <button className="danger" onClick={deleteSelected}>
-                  Delete {selectedIds.size}
-                </button>
+                <button className="danger" onClick={deleteSelected}>Delete {selectedIds.size}</button>
               </>
             )}
             <button className="primary" onClick={downloadFiltered} disabled={filtered.length === 0}>
@@ -698,9 +725,7 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
               <button onClick={downloadAll}>Download all</button>
             )}
             {leads.length > 0 && (
-              <button className="danger" onClick={onClearAll}>
-                Clear all
-              </button>
+              <button className="danger" onClick={onClearAll}>Clear all</button>
             )}
           </div>
         </div>
@@ -708,7 +733,7 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
 
       {leads.length === 0 ? (
         <section className="card empty">
-          <p className="muted">No leads yet. Import from Excel or LinkedIn JSON on the Import tab.</p>
+          <p className="muted">No leads yet. Import on the Import tab.</p>
         </section>
       ) : (
         <section className="card">
@@ -717,11 +742,7 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
               <thead>
                 <tr>
                   <th style={{ width: 36 }}>
-                    <input
-                      type="checkbox"
-                      checked={allOnPageSelected}
-                      onChange={toggleAllOnPage}
-                    />
+                    <input type="checkbox" checked={allOnPageSelected} onChange={toggleAllOnPage} />
                   </th>
                   <th>Email</th>
                   <th>Name</th>
@@ -739,6 +760,7 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
                   <LeadRow
                     key={l.emailLower}
                     lead={l}
+                    pack={pack}
                     selected={selectedIds.has(l.emailLower)}
                     onToggle={toggleOne}
                     onEdit={onEdit}
@@ -747,21 +769,11 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
               </tbody>
             </table>
           </div>
-
           {totalPages > 1 && (
             <div className="pager">
-              <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
-                ← Prev
-              </button>
-              <span className="muted small">
-                Page {safePage + 1} of {totalPages}
-              </span>
-              <button
-                disabled={safePage >= totalPages - 1}
-                onClick={() => setPage(safePage + 1)}
-              >
-                Next →
-              </button>
+              <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>← Prev</button>
+              <span className="muted small">Page {safePage + 1} of {totalPages}</span>
+              <button disabled={safePage >= totalPages - 1} onClick={() => setPage(safePage + 1)}>Next →</button>
             </div>
           )}
         </section>
@@ -772,32 +784,19 @@ function LeadsTab({ leads, setLeads, onEdit, selectedIds, setSelectedIds, onClea
 
 function FilterSelect({ label, value, options, onChange }) {
   return (
-    <select
-      className="select"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      title={label}
-    >
+    <select className="select" value={value} onChange={(e) => onChange(e.target.value)} title={label}>
       <option value="all">{label}: all</option>
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {label}: {o}
-        </option>
-      ))}
+      {options.map((o) => <option key={o} value={o}>{label}: {o}</option>)}
     </select>
   );
 }
 
-const LeadRow = memo(function LeadRow({ lead, selected, onToggle, onEdit }) {
+const LeadRow = memo(function LeadRow({ lead, pack, selected, onToggle, onEdit }) {
   const l = lead;
   return (
     <tr className="lead-row">
       <td>
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={() => onToggle(l.emailLower)}
-        />
+        <input type="checkbox" checked={selected} onChange={() => onToggle(l.emailLower)} />
       </td>
       <td className="mono small">{l.email}</td>
       <td className="small">{l.name || "—"}</td>
@@ -805,21 +804,15 @@ const LeadRow = memo(function LeadRow({ lead, selected, onToggle, onEdit }) {
       <td className="small">{l.company || "—"}</td>
       <td className="small">{l.location || "—"}</td>
       <td>
-        <span
-          className="status-chip"
-          style={{ background: STATUS_COLORS[l.status] || "#888" }}
-        >
+        <span className="status-chip" style={{ background: STATUS_COLORS[l.status] || "#888" }}>
           {l.status}
         </span>
       </td>
       <td>
         <div className="cat-row tight">
           {(l.categories || []).slice(0, 3).map((c) => (
-            <span
-              key={c}
-              className="cat-chip tight"
-              style={{ background: CAT_COLORS[c] || "#888" }}
-            >
+            <span key={c} className="cat-chip tight"
+              style={{ background: pack.categoryColors[c] || "#888" }}>
               {c}
             </span>
           ))}
@@ -830,15 +823,13 @@ const LeadRow = memo(function LeadRow({ lead, selected, onToggle, onEdit }) {
       </td>
       <td className="muted small">{fmtDate(l.addedAt)}</td>
       <td>
-        <button className="link" onClick={() => onEdit(l)}>
-          Edit
-        </button>
+        <button className="link" onClick={() => onEdit(l)}>Edit</button>
       </td>
     </tr>
   );
 });
 
-function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showToast }) {
+function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setImportPreview, showToast }) {
   const [dragging, setDragging] = useState(false);
   const jsonRef = useRef();
   const excelRef = useRef();
@@ -852,7 +843,7 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
         try {
           const parsed = await parseExcelFile(excelFiles[0]);
           setImportPreview({ kind: "excel", parsed, file: excelFiles[0] });
-          showToast(`Parsed ${excelFiles[0].name} — review and confirm to import`);
+          showToast(`Parsed ${excelFiles[0].name} — confirm to import for ${pack.shortName}`);
         } catch (e) {
           console.error(e);
           showToast(`Failed to parse ${excelFiles[0].name}`, "error");
@@ -873,7 +864,8 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
               for (const email of item.emails || []) {
                 const lead = leadFromLinkedInItem(
                   { email, rawName: item.name, postText: item.post_text },
-                  f.name
+                  f.name,
+                  currentOwner
                 );
                 if (lead) incoming.push(lead);
               }
@@ -887,7 +879,7 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
         }
       }
     },
-    [ingestLeads, setImportPreview, showToast]
+    [ingestLeads, setImportPreview, showToast, pack, currentOwner]
   );
 
   const confirmExcelImport = () => {
@@ -895,7 +887,7 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
     const allLeads = [];
     for (const sheet of importPreview.parsed.sheets) {
       const { leads: parsed } = rowsToLeads(sheet, importPreview.parsed.fileName);
-      allLeads.push(...parsed);
+      allLeads.push(...parsed.map((l) => ({ ...l, owner: currentOwner })));
     }
     ingestLeads(allLeads, "Excel import");
     setImportPreview(null);
@@ -903,66 +895,47 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
 
   return (
     <div className="fade-in">
+      <section className="card import-banner">
+        <div>
+          <strong>Importing for {pack.displayName}</strong>{" "}
+          <span className="muted small">— all leads will be tagged owner=<code>{currentOwner}</code></span>
+        </div>
+      </section>
       <div className="grid-2">
         <section
           className={`dropzone-card ${dragging ? "dragging" : ""}`}
           onClick={() => excelRef.current.click()}
-          onDragOver={(e) => {
-            e.preventDefault();
-            if (!dragging) setDragging(true);
-          }}
+          onDragOver={(e) => { e.preventDefault(); if (!dragging) setDragging(true); }}
           onDragLeave={() => setDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragging(false);
-            handleFiles([...e.dataTransfer.files]);
-          }}
+          onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles([...e.dataTransfer.files]); }}
         >
           <div className="dropzone-icon">📊</div>
           <h3>Import Excel</h3>
           <p className="muted small">
-            Upload your existing leads spreadsheet — columns auto-detected
-            (email, name, designation, company, location, etc.)
+            Drop your spreadsheet — columns auto-detected (email, name, designation, company, location, etc.)
           </p>
-          <input
-            ref={excelRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            multiple
-            style={{ display: "none" }}
+          <input ref={excelRef} type="file" accept=".xlsx,.xls,.csv" multiple style={{ display: "none" }}
             onChange={(e) => {
               if (e.target.files?.length) handleFiles([...e.target.files]);
               e.target.value = "";
-            }}
-          />
+            }} />
         </section>
 
-        <section
-          className="dropzone-card"
+        <section className="dropzone-card"
           onClick={() => jsonRef.current.click()}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            handleFiles([...e.dataTransfer.files]);
-          }}
+          onDrop={(e) => { e.preventDefault(); handleFiles([...e.dataTransfer.files]); }}
         >
           <div className="dropzone-icon">🔗</div>
           <h3>Import LinkedIn JSON</h3>
           <p className="muted small">
-            Drop LinkedIn email JSON exports — recruiter, role, and categories
-            auto-extracted from post text
+            Drop LinkedIn email JSON exports — recruiter, role, and categories auto-extracted
           </p>
-          <input
-            ref={jsonRef}
-            type="file"
-            accept=".json"
-            multiple
-            style={{ display: "none" }}
+          <input ref={jsonRef} type="file" accept=".json" multiple style={{ display: "none" }}
             onChange={(e) => {
               if (e.target.files?.length) handleFiles([...e.target.files]);
               e.target.value = "";
-            }}
-          />
+            }} />
         </section>
       </div>
 
@@ -973,7 +946,7 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
             <div className="action-cluster">
               <button onClick={() => setImportPreview(null)}>Cancel</button>
               <button className="primary" onClick={confirmExcelImport}>
-                Import all sheets
+                Import all sheets for {pack.shortName}
               </button>
             </div>
           </div>
@@ -993,31 +966,21 @@ function ImportTab({ leads, ingestLeads, importPreview, setImportPreview, showTo
       )}
 
       <section className="card slide-up">
-        <h3 className="card-title">Summary</h3>
+        <h3 className="card-title">Summary for {pack.shortName}</h3>
         <div className="summary-grid">
           <div className="summary-tile">
             <div className="summary-tile-value">{leads.length}</div>
-            <div className="summary-tile-label">Total leads in database</div>
+            <div className="summary-tile-label">Total leads in {pack.shortName}'s database</div>
           </div>
           <div className="summary-tile">
-            <div className="summary-tile-value">
-              {leads.filter((l) => l.source === "excel").length}
-            </div>
+            <div className="summary-tile-value">{leads.filter((l) => l.source === "excel").length}</div>
             <div className="summary-tile-label">From Excel imports</div>
           </div>
           <div className="summary-tile">
-            <div className="summary-tile-value">
-              {leads.filter((l) => l.source === "linkedin").length}
-            </div>
+            <div className="summary-tile-value">{leads.filter((l) => l.source === "linkedin").length}</div>
             <div className="summary-tile-label">From LinkedIn imports</div>
           </div>
         </div>
-        <p className="footer-note">
-          Every imported lead is deduplicated by email. When the same email
-          appears again with extra fields, the existing record is enriched
-          rather than duplicated. Export from the Leads tab to get the merged
-          spreadsheet.
-        </p>
       </section>
     </div>
   );
@@ -1028,62 +991,41 @@ function SheetPreview({ sheet, onMappingChange }) {
   return (
     <div className="sheet-preview">
       <div className="sheet-head">
-        <div>
-          <strong>{sheetName}</strong>{" "}
-          <span className="muted small">
-            · {dataRows.length} rows · {headers.length} columns
-          </span>
-        </div>
+        <strong>{sheetName}</strong>{" "}
+        <span className="muted small">· {dataRows.length} rows · {headers.length} columns</span>
       </div>
       <div className="mapping-grid">
         {Object.entries(FIELD_LABELS).map(([field, label]) => (
           <div key={field} className="mapping-row">
             <label className="field-label">{label}</label>
-            <select
-              className="select"
-              value={mapping[field] == null ? "" : mapping[field]}
+            <select className="select" value={mapping[field] == null ? "" : mapping[field]}
               onChange={(e) => {
                 const next = { ...mapping };
                 if (e.target.value === "") delete next[field];
                 else next[field] = Number(e.target.value);
                 onMappingChange(next);
-              }}
-            >
+              }}>
               <option value="">— not mapped —</option>
               {headers.map((h, i) => (
-                <option key={i} value={i}>
-                  {h || `(Column ${i + 1})`}
-                </option>
+                <option key={i} value={i}>{h || `(Column ${i + 1})`}</option>
               ))}
             </select>
           </div>
         ))}
       </div>
       <div className="muted small" style={{ marginTop: 8 }}>
-        Sample (first 3 rows): {" "}
-        {dataRows
-          .slice(0, 3)
-          .map((r, i) => (
-            <span key={i} className="sample-row">
-              {(r || []).slice(0, 5).join(" | ")}
-              {i < 2 && " ·· "}
-            </span>
-          ))}
+        Sample (first 3 rows):{" "}
+        {dataRows.slice(0, 3).map((r, i) => (
+          <span key={i} className="sample-row">
+            {(r || []).slice(0, 5).join(" | ")}{i < 2 && " ·· "}
+          </span>
+        ))}
       </div>
     </div>
   );
 }
 
-function GenerateTab({
-  leads,
-  setLeads,
-  profile,
-  generated,
-  setGenerated,
-  selectedIds,
-  setSelectedIds,
-  showToast,
-}) {
+function GenerateTab({ leads, allLeads, setAllLeads, pack, currentOwner, profile, generated, setGenerated, selectedIds, showToast }) {
   const [mode, setMode] = useState("selected");
   const [statusFilter, setStatusFilter] = useState("new");
   const [generating, setGenerating] = useState(false);
@@ -1100,36 +1042,33 @@ function GenerateTab({
       showToast("No leads to generate from", "error");
       return;
     }
+    if (!profile.resumeLink || !profile.email) {
+      showToast("Set resume link + email in Profile tab first", "error");
+      return;
+    }
     setGenerating(true);
-    const entries = sourceLeads.map((l) => ({
-      email: l.email,
-      recruiter: l.name || "Hiring Manager",
-      role: l.role || l.designation || "Business & Finance Opportunity",
-      categories: l.categories?.length ? l.categories : ["management"],
-    }));
     const batches = [];
-    for (let i = 0; i < entries.length; i += BATCH_SIZE) {
-      batches.push(entries.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < sourceLeads.length; i += BATCH_SIZE) {
+      batches.push(sourceLeads.slice(i, i + BATCH_SIZE));
     }
     const wfs = batches.map((batch, idx) => ({
       name: batches.length > 1 ? `Batch ${idx + 1} of ${batches.length}` : "Workflow",
       count: batch.length,
       blob: new Blob(
-        [JSON.stringify(buildWorkflow(profile, batch, idx + 1, batches.length), null, 2)],
+        [JSON.stringify(buildWorkflow(profile, batch, idx + 1, batches.length, currentOwner), null, 2)],
         { type: "application/json" }
       ),
-      filename:
-        batches.length > 1
-          ? `${profile.name.replace(/\s+/g, "_")}_batch${idx + 1}.json`
-          : `${profile.name.replace(/\s+/g, "_")}_mailer.json`,
+      filename: batches.length > 1
+        ? `${currentOwner}_batch${idx + 1}_${new Date().toISOString().slice(0, 10)}.json`
+        : `${currentOwner}_mailer_${new Date().toISOString().slice(0, 10)}.json`,
     }));
     setGenerated(wfs);
 
     const now = new Date().toISOString();
     const targetSet = new Set(sourceLeads.map((l) => l.emailLower));
-    setLeads((prev) =>
+    setAllLeads((prev) =>
       prev.map((l) =>
-        targetSet.has(l.emailLower)
+        l.owner === currentOwner && targetSet.has(l.emailLower)
           ? { ...l, status: "queued", generatedAt: now, updatedAt: now }
           : l
       )
@@ -1143,52 +1082,34 @@ function GenerateTab({
   const downloadOne = (wf) => {
     const url = URL.createObjectURL(wf.blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = wf.filename;
-    a.click();
+    a.href = url; a.download = wf.filename; a.click();
     URL.revokeObjectURL(url);
   };
-
   const downloadAll = () => generated.forEach((wf, i) => setTimeout(() => downloadOne(wf), i * 150));
 
   return (
     <div className="fade-in">
       <section className="card">
-        <h3 className="card-title">Pick which leads to generate workflows for</h3>
+        <h3 className="card-title">Generate workflow for {pack.shortName}</h3>
+        <p className="muted small">Subject lines and email bodies use {pack.shortName}'s content pack.</p>
         <div className="radio-row">
           <label>
-            <input
-              type="radio"
-              checked={mode === "selected"}
-              onChange={() => setMode("selected")}
-            />
+            <input type="radio" checked={mode === "selected"} onChange={() => setMode("selected")} />
             Selected ({selectedIds.size})
           </label>
           <label>
-            <input
-              type="radio"
-              checked={mode === "status"}
-              onChange={() => setMode("status")}
-            />
+            <input type="radio" checked={mode === "status"} onChange={() => setMode("status")} />
             By status
           </label>
           <label>
-            <input
-              type="radio"
-              checked={mode === "all"}
-              onChange={() => setMode("all")}
-            />
+            <input type="radio" checked={mode === "all"} onChange={() => setMode("all")} />
             All ({leads.length})
           </label>
         </div>
 
         {mode === "status" && (
           <div style={{ marginBottom: 12 }}>
-            <select
-              className="select"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
+            <select className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               {STATUS_LIST.map((s) => (
                 <option key={s} value={s}>
                   {s} ({leads.filter((l) => l.status === s).length})
@@ -1201,14 +1122,9 @@ function GenerateTab({
         <div className="row-between">
           <div className="muted small">
             <strong>{sourceLeads.length}</strong> leads selected for generation
-            {sourceLeads.length > BATCH_SIZE &&
-              ` · will split into ${Math.ceil(sourceLeads.length / BATCH_SIZE)} batches`}
+            {sourceLeads.length > BATCH_SIZE && ` · ${Math.ceil(sourceLeads.length / BATCH_SIZE)} batches`}
           </div>
-          <button
-            className="primary big"
-            disabled={generating || sourceLeads.length === 0}
-            onClick={generate}
-          >
+          <button className="primary big" disabled={generating || sourceLeads.length === 0} onClick={generate}>
             {generating ? "Generating…" : `Generate workflow (${sourceLeads.length})`}
           </button>
         </div>
@@ -1225,19 +1141,14 @@ function GenerateTab({
               <div key={i} className="generated-item">
                 <div>
                   <div className="generated-name">{wf.name}</div>
-                  <div className="generated-meta">
-                    {wf.count} emails · {wf.filename}
-                  </div>
+                  <div className="generated-meta">{wf.count} emails · {wf.filename}</div>
                 </div>
-                <button className="primary" onClick={() => downloadOne(wf)}>
-                  Download
-                </button>
+                <button className="primary" onClick={() => downloadOne(wf)}>Download</button>
               </div>
             ))}
           </div>
           <p className="footer-note">
-            Targeted leads were marked <strong>queued</strong>. Update them to{" "}
-            <strong>sent</strong> in the Leads tab once n8n has fired.
+            Targeted leads marked <strong>queued</strong>. Update to <strong>sent</strong> after n8n fires.
           </p>
         </section>
       )}
@@ -1245,21 +1156,18 @@ function GenerateTab({
   );
 }
 
-function ProfileTab({ profile, setProfile }) {
+function ProfileTab({ profile, pack, setProfile }) {
   const pf = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   return (
     <section className="card fade-in">
-      <h2 className="card-title">Your profile</h2>
-      <p className="muted small">Used to build the email body. Auto-saved to this browser.</p>
+      <h2 className="card-title">{pack.displayName}'s profile</h2>
+      <p className="muted small">
+        Used to build the email body. Auto-saved to this browser. Each user has their own profile.
+      </p>
       <div className="radio-row">
         {["fresher", "experienced"].map((t) => (
           <label key={t}>
-            <input
-              type="radio"
-              name="jobType"
-              checked={profile.jobType === t}
-              onChange={() => pf("jobType", t)}
-            />
+            <input type="radio" name="jobType" checked={profile.jobType === t} onChange={() => pf("jobType", t)} />
             {t.charAt(0).toUpperCase() + t.slice(1)}
           </label>
         ))}
@@ -1268,60 +1176,43 @@ function ProfileTab({ profile, setProfile }) {
         {PROFILE_FIELDS.map(([k, label]) => (
           <div key={k}>
             <label className="field-label">{label}</label>
-            <input
-              type="text"
-              value={profile[k]}
-              onChange={(e) => pf(k, e.target.value)}
-              style={{ width: "100%" }}
-            />
+            <input type="text" value={profile[k] || ""} onChange={(e) => pf(k, e.target.value)} style={{ width: "100%" }} />
           </div>
         ))}
         {profile.jobType === "experienced" && (
           <div>
-            <label className="field-label">Experience (e.g. 1.6)</label>
-            <input
-              type="text"
-              value={profile.experience}
-              onChange={(e) => pf("experience", e.target.value)}
-              style={{ width: "100%" }}
-            />
+            <label className="field-label">Experience (years, e.g. 2)</label>
+            <input type="text" value={profile.experience || ""} onChange={(e) => pf("experience", e.target.value)} style={{ width: "100%" }} />
           </div>
         )}
       </div>
       <div className="field-full">
         <label className="field-label">LinkedIn URL</label>
-        <input
-          type="url"
-          value={profile.linkedin}
-          onChange={(e) => pf("linkedin", e.target.value)}
-          style={{ width: "100%" }}
-        />
+        <input type="url" value={profile.linkedin || ""} onChange={(e) => pf("linkedin", e.target.value)} style={{ width: "100%" }} />
       </div>
       <div className="field-full">
-        <label className="field-label">Resume link</label>
-        <input
-          type="url"
-          value={profile.resumeLink}
-          onChange={(e) => pf("resumeLink", e.target.value)}
-          style={{ width: "100%" }}
-        />
+        <label className="field-label">Resume link (Google Drive)</label>
+        <input type="url" value={profile.resumeLink || ""} onChange={(e) => pf("resumeLink", e.target.value)} style={{ width: "100%" }}
+          placeholder="https://drive.google.com/file/d/.../view" />
+        {!profile.resumeLink && (
+          <p className="muted small" style={{ marginTop: 4 }}>
+            ⚠ Required before generating workflows
+          </p>
+        )}
       </div>
     </section>
   );
 }
 
-function LeadDrawer({ lead, onClose, onSave, onDelete }) {
+function LeadDrawer({ lead, pack, onClose, onSave, onDelete }) {
   const [draft, setDraft] = useState({ ...lead });
   const setField = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
-
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-head">
           <h3>Edit lead</h3>
-          <button className="link" onClick={onClose}>
-            ✕
-          </button>
+          <button className="link" onClick={onClose}>✕</button>
         </div>
         <div className="drawer-body">
           <Field label="Email" value={draft.email} onChange={(v) => setField("email", v)} />
@@ -1334,39 +1225,21 @@ function LeadDrawer({ lead, onClose, onSave, onDelete }) {
           <Field label="Hiring role" value={draft.role} onChange={(v) => setField("role", v)} />
           <div>
             <label className="field-label">Status</label>
-            <select
-              className="select"
-              value={draft.status}
-              onChange={(e) => setField("status", e.target.value)}
-              style={{ width: "100%" }}
-            >
-              {STATUS_LIST.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
+            <select className="select" value={draft.status} onChange={(e) => setField("status", e.target.value)} style={{ width: "100%" }}>
+              {STATUS_LIST.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div>
             <label className="field-label">Categories</label>
             <div className="cat-row">
-              {CATEGORY_LIST.map((c) => {
+              {pack.categories.map((c) => {
                 const on = (draft.categories || []).includes(c);
                 return (
-                  <button
-                    key={c}
-                    type="button"
-                    className={`cat-toggle ${on ? "active" : ""}`}
-                    style={on ? { background: CAT_COLORS[c], borderColor: CAT_COLORS[c] } : undefined}
-                    onClick={() =>
-                      setField(
-                        "categories",
-                        on
-                          ? draft.categories.filter((x) => x !== c)
-                          : [...(draft.categories || []), c]
-                      )
-                    }
-                  >
+                  <button key={c} type="button" className={`cat-toggle ${on ? "active" : ""}`}
+                    style={on ? { background: pack.categoryColors[c], borderColor: pack.categoryColors[c] } : undefined}
+                    onClick={() => setField("categories",
+                      on ? draft.categories.filter((x) => x !== c) : [...(draft.categories || []), c]
+                    )}>
                     {c}
                   </button>
                 );
@@ -1375,23 +1248,14 @@ function LeadDrawer({ lead, onClose, onSave, onDelete }) {
           </div>
           <div className="field-full">
             <label className="field-label">Notes</label>
-            <textarea
-              value={draft.notes || ""}
-              onChange={(e) => setField("notes", e.target.value)}
-              rows={3}
-              style={{ width: "100%", resize: "vertical" }}
-            />
+            <textarea value={draft.notes || ""} onChange={(e) => setField("notes", e.target.value)} rows={3} style={{ width: "100%", resize: "vertical" }} />
           </div>
         </div>
         <div className="drawer-foot">
-          <button className="danger" onClick={onDelete}>
-            Delete lead
-          </button>
+          <button className="danger" onClick={onDelete}>Delete lead</button>
           <div className="action-cluster">
             <button onClick={onClose}>Cancel</button>
-            <button className="primary" onClick={() => onSave(draft)}>
-              Save
-            </button>
+            <button className="primary" onClick={() => onSave(draft)}>Save</button>
           </div>
         </div>
       </div>
@@ -1403,12 +1267,7 @@ function Field({ label, value, onChange }) {
   return (
     <div>
       <label className="field-label">{label}</label>
-      <input
-        type="text"
-        value={value || ""}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ width: "100%" }}
-      />
+      <input type="text" value={value || ""} onChange={(e) => onChange(e.target.value)} style={{ width: "100%" }} />
     </div>
   );
 }
@@ -1421,9 +1280,7 @@ function ConfirmDialog({ title, message, onConfirm, onCancel }) {
         <p>{message}</p>
         <div className="modal-actions">
           <button onClick={onCancel}>Cancel</button>
-          <button className="danger filled" onClick={onConfirm}>
-            Confirm
-          </button>
+          <button className="danger filled" onClick={onConfirm}>Confirm</button>
         </div>
       </div>
     </div>

@@ -5,6 +5,7 @@ const CHUNK = 500;
 
 function leadToRow(l) {
   return {
+    owner: l.owner,
     email_lower: l.emailLower,
     email: l.email,
     name: l.name || "",
@@ -27,6 +28,7 @@ function leadToRow(l) {
 
 function rowToLead(r) {
   return {
+    owner: r.owner,
     email: r.email,
     emailLower: r.email_lower,
     name: r.name || "",
@@ -47,12 +49,11 @@ function rowToLead(r) {
   };
 }
 
-export async function fetchAllLeads() {
+export async function fetchAllLeads(ownerId) {
   if (!supabase) return null;
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select("*")
-    .order("added_at", { ascending: false });
+  let q = supabase.from(TABLE).select("*").order("added_at", { ascending: false });
+  if (ownerId) q = q.eq("owner", ownerId);
+  const { data, error } = await q;
   if (error) throw error;
   return (data || []).map(rowToLead);
 }
@@ -64,29 +65,27 @@ export async function upsertLeads(leads) {
     const chunk = rows.slice(i, i + CHUNK);
     const { error } = await supabase
       .from(TABLE)
-      .upsert(chunk, { onConflict: "email_lower" });
+      .upsert(chunk, { onConflict: "owner,email_lower" });
     if (error) throw error;
   }
 }
 
-export async function deleteLeadsByEmail(emailLowers) {
-  if (!supabase || !emailLowers.length) return;
+export async function deleteLeadsByEmail(ownerId, emailLowers) {
+  if (!supabase || !emailLowers.length || !ownerId) return;
   for (let i = 0; i < emailLowers.length; i += CHUNK) {
     const chunk = emailLowers.slice(i, i + CHUNK);
     const { error } = await supabase
       .from(TABLE)
       .delete()
+      .eq("owner", ownerId)
       .in("email_lower", chunk);
     if (error) throw error;
   }
 }
 
-export async function deleteAllLeads() {
-  if (!supabase) return;
-  const { error } = await supabase
-    .from(TABLE)
-    .delete()
-    .neq("email_lower", "___never_match___");
+export async function deleteAllLeadsForOwner(ownerId) {
+  if (!supabase || !ownerId) return;
+  const { error } = await supabase.from(TABLE).delete().eq("owner", ownerId);
   if (error) throw error;
 }
 

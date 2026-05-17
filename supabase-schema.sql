@@ -1,7 +1,18 @@
--- Run this once in Supabase → SQL Editor → New query → paste → Run.
+-- ============================================================
+-- Lead Manager — two-user schema (Sahil + Shashi)
+-- ============================================================
+-- Run this in Supabase -> SQL Editor -> New query -> paste -> Run.
+--
+-- This DROPS the existing leads table and rebuilds it with the
+-- owner column. Per your decision, existing data is wiped -- you'll
+-- re-import Excel for each user.
+-- ============================================================
 
-create table if not exists public.leads (
-  email_lower   text primary key,
+drop table if exists public.leads;
+
+create table public.leads (
+  owner         text not null,
+  email_lower   text not null,
   email         text not null,
   name          text default '',
   designation   text default '',
@@ -17,14 +28,16 @@ create table if not exists public.leads (
   source_file   text default '',
   added_at      timestamptz default now(),
   updated_at    timestamptz default now(),
-  generated_at  timestamptz
+  generated_at  timestamptz,
+  primary key (owner, email_lower)
 );
 
-create index if not exists leads_added_at_idx on public.leads (added_at desc);
-create index if not exists leads_status_idx   on public.leads (status);
-create index if not exists leads_company_idx  on public.leads (company);
-create index if not exists leads_location_idx on public.leads (location);
+create index if not exists leads_owner_added_idx    on public.leads (owner, added_at desc);
+create index if not exists leads_owner_status_idx   on public.leads (owner, status);
+create index if not exists leads_owner_company_idx  on public.leads (owner, company);
+create index if not exists leads_owner_location_idx on public.leads (owner, location);
 
--- Single-user / personal mode: disable RLS so the anon key can read/write.
--- If you ever share this app publicly, switch to RLS + Supabase Auth instead.
+-- Personal/single-org mode: anon key can read/write. The app filters
+-- by owner client-side. Re-enable RLS + add Supabase Auth if you ever
+-- share this app publicly.
 alter table public.leads disable row level security;
