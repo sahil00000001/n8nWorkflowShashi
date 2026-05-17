@@ -67,20 +67,34 @@ const REASON_FOR_EXPLORING =
 const GITHUB_URL = "https://github.com/sahil00000001";
 
 function noticeShort(noticePeriod) {
-  // Turn "15 Days — not currently serving" into "Available in 15 Days"
   const m = String(noticePeriod || "").match(/(\d+\s*Days?)/i);
   return m ? `Available in ${m[1]}` : "Available Immediately";
 }
 
+function noticeDaysOnly(noticePeriod) {
+  const m = String(noticePeriod || "").match(/(\d+\s*Days?)/i);
+  return m ? m[1] : "Immediate";
+}
+
+function cleanRoleForSubject(raw) {
+  let r = String(raw || "AI Engineer")
+    .replace(/[''`"]/g, "")
+    .replace(/[^\w\s\-/&]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  r = r.replace(/^(were hiring|we are hiring|urgent hiring|hiring alert|alert|hiring for|now hiring|looking for|hiring)\s*/i, "").trim();
+  const idx = r.toLowerCase().indexOf(" hiring ");
+  if (idx > 0 && idx < 50) r = r.slice(idx + 8).trim();
+  if (r.length > 40) r = r.slice(0, 38).trim() + "…";
+  return r || "AI Engineer";
+}
+
 function genSubject(lead, profile) {
-  const r = String(lead.role || "this opening")
-    .replace(/[^\w\s\-/\\(\\)\.&+]/g, "")
-    .trim()
-    .replace(/\s+/g, " ");
-  const name = profile.name || "Sahil Vashisht";
-  const title = profile.title || "Agentic AI Developer";
-  const tag = `${profile.experience || "1.6"} YoE`;
-  return `Application: ${r} | ${name} — ${title} | ${tag} | ${noticeShort(profile.noticePeriod)}`;
+  const r = cleanRoleForSubject(lead.role);
+  const name = (profile.name || "Sahil Vashisht").split(" ").slice(0, 2).join(" ");
+  const yoe = profile.experience || "1.6";
+  const days = noticeDaysOnly(profile.noticePeriod);
+  return `${r} — ${name} | ${yoe} YoE | ${days} Notice`;
 }
 
 function genBody(lead, profile) {

@@ -1053,12 +1053,24 @@ function SheetPreview({ sheet, onMappingChange }) {
 function ProfileTab({ profile, pack, setProfile }) {
   const pf = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const has = (k) => pack.defaultProfile[k] !== undefined;
+  const resetToDefaults = () => {
+    if (window.confirm(`Replace every field with the latest pack defaults for ${pack.displayName}?\n\nThis overwrites any customizations.`)) {
+      setProfile({ ...pack.defaultProfile });
+    }
+  };
   return (
     <section className="card fade-in">
-      <h2 className="card-title">{pack.displayName}'s profile</h2>
-      <p className="muted small">
-        Used to build the email body. Auto-saved to this browser. Each user has their own profile.
-      </p>
+      <div className="row-between">
+        <div>
+          <h2 className="card-title" style={{ margin: 0 }}>{pack.displayName}'s profile</h2>
+          <p className="muted small" style={{ marginTop: 4 }}>
+            Used to build the email body. Auto-saved to this browser.
+          </p>
+        </div>
+        <button onClick={resetToDefaults} title="Replace all fields with the latest defaults from this user's pack">
+          ↻ Reset to defaults
+        </button>
+      </div>
       <div className="radio-row">
         {["fresher", "experienced"].map((t) => (
           <label key={t}>

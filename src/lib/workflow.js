@@ -51,6 +51,7 @@ export function buildWorkflow(profile, leads, batchNum, totalBatches, ownerId) {
         type: "n8n-nodes-base.emailSend",
         typeVersion: 2.1,
         position: [1020, 400],
+        continueOnFail: true,
         parameters: {
           fromEmail: "={{ $json.from }}",
           toEmail: "={{ $json.to }}",
@@ -58,9 +59,6 @@ export function buildWorkflow(profile, leads, batchNum, totalBatches, ownerId) {
           emailType: "html",
           html: "={{ $json.html }}",
           options: { allowUnauthorizedCerts: false, appendAttribution: false },
-        },
-        credentials: {
-          smtp: { id: "YOUR_SMTP_CREDENTIAL_ID", name: "Gmail SMTP" },
         },
       },
       {

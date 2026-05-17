@@ -10,15 +10,33 @@ export function sanitize(s) {
 export function extractRole(postText) {
   const lines = (postText || "").split("\n").map((l) => l.trim()).filter(Boolean);
   for (const line of lines.slice(0, 6)) {
-    const clean = line
-      .replace(/[^\w\s\-\/\(\)&,\.#+]/g, "")
-      .trim()
-      .replace(/^(we.re hiring|we are hiring|urgent hiring|hiring alert|hiring|join us|alert)[:\-|!\s]*/i, "")
-      .trim()
+    let clean = line
+      .replace(/[''`]/g, "")
+      .replace(/[^\w\s\-\/\(\)&,\.#+]/g, " ")
       .replace(/#\w+/g, "")
-      .trim()
-      .replace(/\s+/g, " ");
-    if (clean.length > 5 && clean.length < 80) return clean;
+      .replace(/\s+/g, " ")
+      .trim();
+
+    clean = clean
+      .replace(/^(were hiring|we are hiring|we re hiring|urgent hiring|hiring alert|alert|hiring for|now hiring|looking for|join us as|hiring)[:\-|!\s]*/i, "")
+      .trim();
+
+    const lower = clean.toLowerCase();
+    const hiringIdx = lower.indexOf(" hiring ");
+    if (hiringIdx > 0 && hiringIdx < 60) {
+      clean = clean.slice(hiringIdx + " hiring ".length).trim();
+    } else if (lower.startsWith("hiring ")) {
+      clean = clean.slice("hiring ".length).trim();
+    }
+
+    clean = clean
+      .replace(/\s+(in|at|for|near)\s+[A-Za-z][A-Za-z .\-]+$/i, "")
+      .replace(/\s+\(.*?\)\s*$/g, "")
+      .replace(/[\s|\-]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (clean.length > 4 && clean.length < 80) return clean;
   }
   return "Open Role Opportunity";
 }
