@@ -1052,6 +1052,7 @@ function SheetPreview({ sheet, onMappingChange }) {
 
 function ProfileTab({ profile, pack, setProfile }) {
   const pf = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
+  const has = (k) => pack.defaultProfile[k] !== undefined;
   return (
     <section className="card fade-in">
       <h2 className="card-title">{pack.displayName}'s profile</h2>
@@ -1075,8 +1076,36 @@ function ProfileTab({ profile, pack, setProfile }) {
         ))}
         {profile.jobType === "experienced" && (
           <div>
-            <label className="field-label">Experience (years, e.g. 2)</label>
+            <label className="field-label">Experience (years, e.g. 1.6)</label>
             <input type="text" value={profile.experience || ""} onChange={(e) => pf("experience", e.target.value)} style={{ width: "100%" }} />
+          </div>
+        )}
+        {has("title") && (
+          <div>
+            <label className="field-label">Headline title (in email)</label>
+            <input type="text" value={profile.title || ""} onChange={(e) => pf("title", e.target.value)} style={{ width: "100%" }}
+              placeholder="e.g. Agentic AI Developer" />
+          </div>
+        )}
+        {has("currentCtc") && (
+          <div>
+            <label className="field-label">Current CTC</label>
+            <input type="text" value={profile.currentCtc || ""} onChange={(e) => pf("currentCtc", e.target.value)} style={{ width: "100%" }}
+              placeholder="e.g. 6 LPA" />
+          </div>
+        )}
+        {has("expectedCtc") && (
+          <div>
+            <label className="field-label">Expected CTC</label>
+            <input type="text" value={profile.expectedCtc || ""} onChange={(e) => pf("expectedCtc", e.target.value)} style={{ width: "100%" }}
+              placeholder="e.g. 8-10 LPA (negotiable)" />
+          </div>
+        )}
+        {has("noticePeriod") && (
+          <div>
+            <label className="field-label">Notice period</label>
+            <input type="text" value={profile.noticePeriod || ""} onChange={(e) => pf("noticePeriod", e.target.value)} style={{ width: "100%" }}
+              placeholder="e.g. 15 Days — not currently serving" />
           </div>
         )}
       </div>

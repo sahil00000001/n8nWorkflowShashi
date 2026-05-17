@@ -37,7 +37,7 @@ function detectCategories(postText) {
     cats.push("data");
   if (/\b(devops|sre|site reliability|infrastructure|docker|kubernetes|k8s|terraform|ansible|ci\/cd|cicd|aws certified|cloud engineer)\b/.test(t))
     cats.push("devops");
-  if (/\b(software engineer|software developer|programmer|swe\b|sde\b|engineer i+|engineer\b)\b/.test(t) && !cats.length)
+  if (/\b(software engineer|software developer|programmer|swe\b|sde\b)\b/.test(t) && !cats.length)
     cats.push("software");
   return cats.length ? cats : ["software"];
 }
@@ -50,149 +50,113 @@ function escape(s) {
     .replace(/"/g, "&quot;");
 }
 
-function isAIFlavor(c) {
-  return c.includes("ai") || c.includes("ml");
-}
-function isDataFlavor(c) {
-  return c.includes("data");
-}
+const CERTIFICATIONS = [
+  "Tata GenAI-Powered Data Analytics — Forage, 2025",
+  "Introduction to Large Language Models — Google",
+  "Introduction to Generative AI — Google",
+  "AWS Cloud Practitioner Essentials — AWS, 2025",
+  "Microsoft Azure Fundamentals AZ-900 — Microsoft",
+  "Camunda Knowledge Badge (BPMN & DMN) — Credly, 2025",
+  "Six Sigma White Belt Certification",
+  "Introduction to SQL — Google Developer Program",
+];
 
-function getRD(c) {
-  if (c.includes("ai") && c.includes("ml")) return "AI / ML Engineer";
-  if (c.includes("ai")) return "AI Engineer · GenAI";
-  if (c.includes("ml")) return "Machine Learning Engineer";
-  if (c.includes("fullstack")) return "Full Stack Developer";
-  if (c.includes("backend")) return "Backend Developer";
-  if (c.includes("frontend")) return "Frontend Developer";
-  if (c.includes("data")) return "Data Engineer · AI";
-  if (c.includes("devops")) return "Full Stack + DevOps";
-  return "Software Engineer";
-}
+const REASON_FOR_EXPLORING =
+  "Looking to contribute to advanced AI systems and scalable automation solutions in a growth-oriented environment.";
 
-function getCertBlock(c) {
-  const ai = [
-    "Tata GenAI-Powered Data Analytics Simulation — Forage, 2025",
-    "AWS Cloud Practitioner Essentials — AWS, 2025",
-    "Camunda BPMN & DMN — Credly, 2025",
-  ];
-  const cloud = [
-    "AWS Cloud Practitioner Essentials — AWS, 2025",
-    "Tata GenAI-Powered Data Analytics Simulation — Forage, 2025",
-    "Camunda BPMN & DMN — Credly, 2025",
-  ];
-  const list = isAIFlavor(c) || isDataFlavor(c) ? ai : cloud;
-  return list.map((cert, i) => `${i + 1}. ${cert}`).join("\n");
-}
+const GITHUB_URL = "https://github.com/sahil00000001";
 
-function getSkillBlock(c) {
-  const b = [];
-  if (isAIFlavor(c) || isDataFlavor(c)) {
-    b.push(["AI / GenAI", "LangChain, LangGraph, LlamaIndex, CrewAI, RAG Pipelines, Hybrid Search, Prompt Engineering (CoT, ReAct, ToT), LLM Fine-tuning (LoRA, QLoRA), Multi-Agent Systems, MCP, Agent Memory, Guardrails, LLMOps."]);
-    b.push(["ML Frameworks", "PyTorch, TensorFlow, Scikit-learn, Hugging Face Transformers, Pandas, NumPy, BERT, Whisper."]);
-    b.push(["Vector DBs", "Pinecone, FAISS, Weaviate, ChromaDB, pgvector, Qdrant."]);
-    b.push(["Backend & API", "FastAPI, Flask, Spring Boot, ASP.NET Core, RESTful APIs, WebSockets, Microservices, Pydantic, asyncio."]);
-    b.push(["Cloud", "AWS (EC2, S3, RDS, IAM, Lambda, Bedrock, SageMaker), Azure (Functions, Azure OpenAI, Azure AI Search), GCP (Vertex AI)."]);
-    b.push(["LLMOps & DevOps", "Docker, Kubernetes, CI/CD, Git, MLflow, LangSmith, RAGAS, DeepEval, Promptfoo, Observability."]);
-  } else {
-    b.push(["Backend", "ASP.NET Core 8, ASP.NET MVC, Spring Boot, Spring MVC, Microservices Architecture, RESTful API Development, FastAPI."]);
-    b.push(["Frontend", "ReactJS, Redux, TypeScript, JavaScript (ES6+), HTML5, CSS3, Responsive UI, Component Libraries."]);
-    if (c.includes("fullstack") || c.includes("frontend")) {
-      b.push(["UI Engineering", "Reusable component libraries, API-driven data visualization, dynamic tables, performance optimization."]);
-    }
-    b.push(["Databases", "PostgreSQL, MySQL, MongoDB, SQL Server, Redis (SQL & NoSQL design, indexing, query optimization)."]);
-    b.push(["Cloud & DevOps", "AWS (EC2, S3, RDS, IAM), Azure (Functions, Infrastructure), Docker, Git, CI/CD pipelines, Postman."]);
-    if (c.includes("devops")) {
-      b.push(["DevOps Practices", "Docker, Kubernetes (basics), CI/CD, Terraform (basics), Linux, MLflow, Observability."]);
-    }
-    b.push(["Languages", "Java, JavaScript, TypeScript, Python, C++, SQL."]);
-  }
-  return b.map(([sk, desc]) => `${sk}\n${desc}`).join("\n\n");
-}
-
-function getTagline(c) {
-  if (isAIFlavor(c)) return "AI · LangChain · RAG · LangGraph";
-  if (isDataFlavor(c)) return "Data · NL-to-SQL · Snowflake · AI";
-  if (c.includes("backend")) return "Backend · ASP.NET · Spring Boot · 35+ APIs";
-  if (c.includes("frontend")) return "Frontend · React · TypeScript · Redux";
-  if (c.includes("fullstack")) return "Full Stack · ASP.NET + React · 35+ APIs";
-  if (c.includes("devops")) return "Docker · CI/CD · AWS · 35+ APIs";
-  return "Software Engineer · 35+ Production APIs";
+function noticeShort(noticePeriod) {
+  // Turn "15 Days — not currently serving" into "Available in 15 Days"
+  const m = String(noticePeriod || "").match(/(\d+\s*Days?)/i);
+  return m ? `Available in ${m[1]}` : "Available Immediately";
 }
 
 function genSubject(lead, profile) {
-  const r = String(lead.role || "this opening").replace(/[^\w\s\-/\\(\\)\.&+]/g, "").trim().replace(/\s+/g, " ");
-  const c = lead.categories || [];
-  const tag = `${profile.experience || "2"} YoE`;
+  const r = String(lead.role || "this opening")
+    .replace(/[^\w\s\-/\\(\\)\.&+]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
   const name = profile.name || "Sahil Vashisht";
-  return `Application: ${r} | ${name} — ${getRD(c)} | ${getTagline(c)} | ${tag}`;
+  const title = profile.title || "Agentic AI Developer";
+  const tag = `${profile.experience || "1.6"} YoE`;
+  return `Application: ${r} | ${name} — ${title} | ${tag} | ${noticeShort(profile.noticePeriod)}`;
 }
 
 function genBody(lead, profile) {
-  const c = lead.categories || [];
-  const rf = (lead.name || "").split(" ")[0];
-  const greeting = (rf && rf !== "Hiring" && rf !== "Manager" && rf.length > 1) ? `Dear ${escape(rf)},` : "Dear Hiring Manager,";
-  const rd = getRD(c);
-  const sk = getSkillBlock(c);
-  const ct = getCertBlock(c);
   const name = escape(profile.name);
+  const title = escape(profile.title || "Agentic AI Developer");
   const role = escape(lead.role || "this opening");
+  const experience = escape(profile.experience || "1.6");
+  const currentCtc = escape(profile.currentCtc || "—");
+  const expectedCtc = escape(profile.expectedCtc || "Negotiable");
+  const noticePeriod = escape(profile.noticePeriod || "Immediate");
+  const location = escape(profile.location || "");
+  const email = escape(profile.email || "");
+  const phone = escape(profile.phone || "");
+  const linkedin = escape(profile.linkedin || "");
+  const resume = escape(profile.resumeLink || "");
+  const certCount = CERTIFICATIONS.length;
+  const availability = noticeShort(profile.noticePeriod);
 
-  const introLine = isAIFlavor(c)
-    ? `AI Engineer with ${escape(profile.experience || "2")} years of production experience building LLM-powered applications, agentic AI systems, and RAG pipelines using LangChain, LangGraph, AWS Bedrock, and Azure OpenAI`
-    : isDataFlavor(c)
-    ? `Data + AI Engineer with ${escape(profile.experience || "2")} years building NL-to-SQL engines, real-time analytics pipelines, and schema-aware GenAI integrations over Snowflake and Azure OpenAI`
-    : `Full Stack Developer with ${escape(profile.experience || "2")} years of production experience architecting REST APIs in ASP.NET Core and Spring Boot, building scalable React/TypeScript frontends, and delivering enterprise integrations end-to-end`;
-
-  const aiHighlights = `
-  <li><strong>Autonomous AI Code Review Agent</strong> — Built self-correcting agentic system (GPT-4o + LangGraph + ReAct loops); 87% precision on 200 real-world PRs.</li>
-  <li><strong>Multi-Modal Customer Support Agent</strong> — Voice-to-text agent (Whisper + Claude 3 + hybrid RAG on Pinecone) with multi-agent handoff &amp; guardrails, serverless on AWS Lambda.</li>
-  <li><strong>Real-Time Financial Intelligence Platform</strong> — NL-to-SQL engine (Azure OpenAI + Snowflake Cortex); reduced analyst query time by 60%.</li>
-  <li><strong>10+ production APIs</strong> at PodTech using LLM function-calling — reduced manual processing time by 35%.</li>
-  <li><strong>Led WLS enterprise integration</strong> — 5-developer team, 100% on-time delivery.</li>
-  `.trim();
-
-  const fsHighlights = `
-  <li><strong>Led WLS enterprise integration end-to-end</strong> at PodTech — managed 5 developers, owned system architecture, delivered 100% on-time under strict client deadlines.</li>
-  <li><strong>Architected 35+ production REST APIs</strong> across ASP.NET Core 8 and Spring Boot — serving thousands of daily requests.</li>
-  <li><strong>Reduced API response time by 20% &amp; data processing efficiency by 30%</strong> at LTIMindtree via systematic refactoring and indexing.</li>
-  <li><strong>Engineered complex .NET file handling &amp; command processors</strong> — streamlined data operations, 35% processing time reduction.</li>
-  <li><strong>Built reusable React + Redux component libraries</strong> with TypeScript and dynamic API-driven data visualization.</li>
-  `.trim();
-
-  const highlights = isAIFlavor(c) || isDataFlavor(c) ? aiHighlights : fsHighlights;
-
-  const headlineBadge = isAIFlavor(c)
-    ? "2 YoE · LangChain · LangGraph · AWS Bedrock · Azure OpenAI"
-    : isDataFlavor(c)
-    ? "2 YoE · Snowflake · Azure OpenAI · NL-to-SQL"
-    : "2 YoE · ASP.NET Core · Spring Boot · React · 35+ APIs";
+  const certListHtml = CERTIFICATIONS.map((c) => `  <li>${escape(c)}</li>`).join("\n");
 
   return `<div style="font-family:Arial,sans-serif;max-width:680px;color:#222;line-height:1.55">
 <h2 style="margin:0 0 4px">${name}</h2>
-<p style="margin:0 0 16px;color:#555;font-size:14px">${escape(rd)} | ${escape(profile.degree)}, ${escape(profile.college)} (${escape(profile.gradYear)}) | ${headlineBadge}</p>
-<p>${greeting}</p>
-<p>I came across the <strong>${role}</strong> opening and I am excited to apply. I am an ${introLine} — available to join immediately.</p>
+<p style="margin:0 0 16px;color:#555;font-size:14px">${title} &nbsp;|&nbsp; ${experience} Years Experience &nbsp;|&nbsp; ${certCount} Certifications &nbsp;|&nbsp; ${escape(availability)}</p>
+
+<p>Dear Hiring Manager,</p>
+
+<p>I am writing to express my interest in the <strong>${role}</strong> position. With ${experience} years of professional experience as a ${title} and ${certCount} industry certifications, I believe I can contribute meaningfully to your team from day one.</p>
+
 <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px;margin:12px 0">
-  <tr><td><strong>Experience</strong></td><td>${escape(profile.experience || "2")} years — PodTech (Full Stack · AI-Integrated Systems) + LTIMindtree (Software Developer)</td></tr>
-  <tr><td><strong>Qualification</strong></td><td>${escape(profile.degree)} — ${escape(profile.college)} (${escape(profile.gradYear)}) | CGPA 8.47</td></tr>
-  <tr><td><strong>Key Achievement</strong></td><td>Led WLS enterprise integration — 5-dev team, 100% on-time, 35+ production APIs</td></tr>
-  <tr><td><strong>Expected CTC</strong></td><td>As per industry standards / negotiable</td></tr>
-  <tr><td><strong>Availability</strong></td><td>30-day notice — ${escape(profile.location)}</td></tr>
+  <tr><td><strong>Total Experience</strong></td><td>${experience} Years</td></tr>
+  <tr><td><strong>Current CTC</strong></td><td>${currentCtc}</td></tr>
+  <tr><td><strong>Expected CTC</strong></td><td>${expectedCtc}</td></tr>
+  <tr><td><strong>Notice Period</strong></td><td>${noticePeriod}</td></tr>
+  <tr><td><strong>Current Location</strong></td><td>${location}${location ? ", India" : ""}</td></tr>
 </table>
-<h3 style="margin:18px 0 6px">Skills &amp; Expertise</h3>
-<pre style="font-family:Arial,sans-serif;white-space:pre-wrap;margin:0;font-size:14px">${escape(sk)}</pre>
-<h3 style="margin:18px 0 6px">Key Highlights</h3>
+
+<h3 style="margin:18px 0 6px">Relevant Skills &amp; Expertise</h3>
+<div style="font-size:14px">
+  <p style="margin:8px 0"><strong>Full Stack Development (${experience} Years)</strong><br/>
+  ASP.NET Core, Spring Boot, React + TypeScript, Node.js — 35+ production RESTful APIs</p>
+
+  <p style="margin:8px 0"><strong>AI &amp; Agentic AI (9/10)</strong><br/>
+  LLM integration, autonomous agent workflows, RAG pipelines, prompt engineering. Google-certified in LLMs &amp; Generative AI.</p>
+
+  <p style="margin:8px 0"><strong>Problem Solving &amp; DSA (8.5/10)</strong><br/>
+  End-to-end feature ownership, system design, code reviews, Agile/Scrum.</p>
+
+  <p style="margin:8px 0"><strong>Databases — SQL / NoSQL (7/10)</strong><br/>
+  MySQL, PostgreSQL, MongoDB, SQL Server — schema design &amp; query optimization.</p>
+</div>
+
+<h3 style="margin:18px 0 6px">Key Achievements</h3>
 <ul style="margin:0;padding-left:18px">
-${highlights}
+  <li>Led WLS enterprise integration at PodTech — managed team of 5, delivered 100% on-time</li>
+  <li>Architected 35+ production-ready RESTful APIs across ASP.NET Core &amp; Spring Boot</li>
+  <li>Reduced API response times by 20% and data processing time by 35%</li>
+  <li>B.Tech Information Technology — CGPA: 8.47 — GTBIT, New Delhi (2024)</li>
 </ul>
-<h3 style="margin:18px 0 6px">Credentials</h3>
-<pre style="font-family:Arial,sans-serif;white-space:pre-wrap;margin:0;font-size:14px">${escape(ct)}</pre>
-<p style="margin-top:16px">I would love the opportunity to contribute to your team. My resume is linked below.</p>
-<p>I bring strong production engineering, ownership across the full stack, and a track record of measurable KPI improvements.</p>
-<p><a href="${escape(profile.resumeLink)}">VIEW RESUME</a> · <a href="${escape(profile.linkedin)}">LINKEDIN</a> · <a href="https://github.com/sahil00000001">GITHUB</a></p>
-<p>Thank you for your time.</p>
-<p>Warm regards,<br/><strong>${name}</strong><br/>${escape(rd)} | ${escape(profile.degree)}, ${escape(profile.college)} (${escape(profile.gradYear)})<br/>${escape(profile.email)} | +91 ${escape(profile.phone)} | ${escape(profile.location)}, India</p>
-<p style="font-size:12px;color:#888">In response to a position posted on LinkedIn · Resume</p>
+
+<h3 style="margin:18px 0 6px">Professional Certifications</h3>
+<ol style="margin:0;padding-left:20px">
+${certListHtml}
+</ol>
+
+<p style="margin-top:16px">I would welcome the opportunity to discuss how my experience aligns with your team's requirements. My resume is attached below for your reference.</p>
+
+<p><strong>Reason for exploring:</strong> ${escape(REASON_FOR_EXPLORING)}</p>
+
+<p><a href="${resume}">VIEW RESUME</a> &nbsp;·&nbsp; <a href="${linkedin}">LINKEDIN</a> &nbsp;·&nbsp; <a href="${GITHUB_URL}">GITHUB</a></p>
+
+<p>Thank you for your time and consideration.</p>
+
+<p>Warm regards,<br/>
+<strong>${name}</strong><br/>
+${title}<br/>
+${email} &nbsp;|&nbsp; +91 ${phone} &nbsp;|&nbsp; ${location}${location ? ", India" : ""}</p>
 </div>`;
 }
 
@@ -200,7 +164,7 @@ export const sahilPack = {
   id: "sahil",
   displayName: "Sahil Vashisht",
   shortName: "Sahil",
-  tagline: "AI Engineer · 2 YoE · LangChain · RAG · Full Stack",
+  tagline: "Agentic AI Developer · 1.6 YoE · 8 Certs · 15-Day Notice",
   emoji: "🚀",
   color: "#4A3AFF",
   defaultProfile: {
@@ -208,13 +172,17 @@ export const sahilPack = {
     email: "vashishtsahil99@gmail.com",
     phone: "9625107920",
     linkedin: "https://www.linkedin.com/in/sahilvashisht00/",
-    location: "New Delhi",
-    resumeLink: "",
+    location: "Bangalore",
+    resumeLink: "https://drive.google.com/file/d/1biWU5Odp_Wjja0NUykLytKINWUYj01mo/view",
     gradYear: "2024",
     degree: "BTech IT",
     college: "GTBIT",
-    experience: "2",
+    experience: "1.6",
     jobType: "experienced",
+    title: "Agentic AI Developer",
+    currentCtc: "6 LPA",
+    expectedCtc: "8-10 LPA (negotiable)",
+    noticePeriod: "15 Days — not currently serving",
   },
   categories: CATEGORIES,
   categoryColors: CATEGORY_COLORS,
