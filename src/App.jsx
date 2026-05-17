@@ -58,14 +58,13 @@ function fmtDate(d) {
 
 export default function App() {
   const [currentOwner, setCurrentOwner] = useState(null);
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("import");
   const [profiles, setProfiles] = useState(null);
   const [allLeads, setAllLeads] = useState([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
   const [toast, setToast] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [editingLead, setEditingLead] = useState(null);
-  const [generated, setGenerated] = useState([]);
   const [importPreview, setImportPreview] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [syncStatus, setSyncStatus] = useState(
@@ -177,8 +176,7 @@ export default function App() {
     setSelectedIds(new Set());
     setEditingLead(null);
     setImportPreview(null);
-    setGenerated([]);
-    setTab("dashboard");
+    setTab("import");
   };
 
   const leads = useMemo(
@@ -302,10 +300,8 @@ export default function App() {
 
       <nav className="tabs">
         {[
-          ["dashboard", "Dashboard"],
-          ["leads", `Leads · ${leads.length}`],
           ["import", "Import"],
-          ["generate", "Generate"],
+          ["leads", `Leads · ${leads.length}`],
           ["profile", "Profile"],
         ].map(([key, label]) => (
           <button
@@ -319,32 +315,6 @@ export default function App() {
       </nav>
 
       <div className="tab-content">
-        {tab === "dashboard" && (
-          <DashboardTab leads={leads} pack={pack} onJump={(t) => setTab(t)} />
-        )}
-        {tab === "leads" && (
-          <LeadsTab
-            leads={leads}
-            pack={pack}
-            allLeads={allLeads}
-            setAllLeads={setAllLeads}
-            currentOwner={currentOwner}
-            onEdit={setEditingLead}
-            selectedIds={selectedIds}
-            setSelectedIds={setSelectedIds}
-            onClearAll={() =>
-              setConfirm({
-                title: `Delete all of ${pack.shortName}'s leads?`,
-                message: `This permanently removes all ${leads.length} leads for ${pack.displayName}. Cannot be undone.`,
-                onConfirm: () => {
-                  clearAllForCurrent();
-                  setSelectedIds(new Set());
-                  showToast(`Cleared all leads for ${pack.shortName}`);
-                },
-              })
-            }
-          />
-        )}
         {tab === "import" && (
           <ImportTab
             leads={leads}
@@ -358,19 +328,30 @@ export default function App() {
             showToast={showToast}
           />
         )}
-        {tab === "generate" && (
-          <GenerateTab
+        {tab === "leads" && (
+          <LeadsTab
             leads={leads}
+            pack={pack}
             allLeads={allLeads}
             setAllLeads={setAllLeads}
-            pack={pack}
             currentOwner={currentOwner}
             profile={profile}
-            generated={generated}
-            setGenerated={setGenerated}
+            onEdit={setEditingLead}
             selectedIds={selectedIds}
             setSelectedIds={setSelectedIds}
+            markLeadsSent={markLeadsSent}
             showToast={showToast}
+            onClearAll={() =>
+              setConfirm({
+                title: `Delete all of ${pack.shortName}'s leads?`,
+                message: `This permanently removes all ${leads.length} leads for ${pack.displayName}. Cannot be undone.`,
+                onConfirm: () => {
+                  clearAllForCurrent();
+                  setSelectedIds(new Set());
+                  showToast(`Cleared all leads for ${pack.shortName}`);
+                },
+              })
+            }
           />
         )}
         {tab === "profile" && (
@@ -506,108 +487,8 @@ function HeroStat({ label, value, accent }) {
   );
 }
 
-function DashboardTab({ leads, pack, onJump }) {
-  const byDesignation = useMemo(() => buildBreakdown(leads, "designation"), [leads]);
-  const byCompany = useMemo(() => buildBreakdown(leads, "company"), [leads]);
-  const byLocation = useMemo(() => buildBreakdown(leads, "location"), [leads]);
-  const byCategory = useMemo(() => buildArrayBreakdown(leads, "categories"), [leads]);
-  const byStatus = useMemo(() => buildBreakdown(leads, "status"), [leads]);
 
-  if (leads.length === 0) {
-    return (
-      <section className="card empty fade-in">
-        <h2>Welcome, {pack.shortName}!</h2>
-        <p className="muted" style={{ marginBottom: 20 }}>
-          No leads yet. Import from Excel or LinkedIn JSON to get started.
-        </p>
-        <button className="primary big" onClick={() => onJump("import")}>
-          Go to Import →
-        </button>
-      </section>
-    );
-  }
-
-  return (
-    <div className="dashboard fade-in">
-      <div className="grid-2">
-        <BreakdownCard title="By Designation" data={byDesignation} accent={pack.color} />
-        <BreakdownCard title="By Company" data={byCompany} accent={pack.color} />
-      </div>
-      <div className="grid-2">
-        <BreakdownCard title="By Location" data={byLocation} accent={pack.color} />
-        <BreakdownCard title="By Status" data={byStatus} accent={pack.color} colors={STATUS_COLORS} />
-      </div>
-      <BreakdownCard title="By Category" data={byCategory} accent={pack.color} colors={pack.categoryColors} />
-
-      <section className="card slide-up">
-        <h3 className="card-title">Recent leads</h3>
-        <div className="recent-grid">
-          {leads
-            .slice()
-            .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
-            .slice(0, 6)
-            .map((l) => (
-              <div key={l.emailLower} className="recent-card">
-                <div className="recent-name">{l.name || l.email.split("@")[0]}</div>
-                <div className="recent-meta">
-                  {l.designation || "—"} {l.company && `· ${l.company}`}
-                </div>
-                <div className="recent-email mono small muted">{l.email}</div>
-              </div>
-            ))}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function buildBreakdown(leads, key) {
-  const counts = {};
-  for (const l of leads) {
-    const v = (l[key] || "").trim() || "—";
-    counts[v] = (counts[v] || 0) + 1;
-  }
-  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
-}
-
-function buildArrayBreakdown(leads, key) {
-  const counts = {};
-  for (const l of leads) {
-    const arr = l[key] || [];
-    if (!arr.length) counts["—"] = (counts["—"] || 0) + 1;
-    for (const v of arr) counts[v] = (counts[v] || 0) + 1;
-  }
-  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
-}
-
-function BreakdownCard({ title, data, accent, colors }) {
-  const max = Math.max(1, ...data.map(([, c]) => c));
-  return (
-    <section className="card slide-up">
-      <h3 className="card-title">{title}</h3>
-      {data.length === 0 ? (
-        <p className="muted small">No data</p>
-      ) : (
-        <div className="bar-list">
-          {data.map(([label, count]) => (
-            <div className="bar-row" key={label}>
-              <div className="bar-label" title={label}>{label}</div>
-              <div className="bar-track">
-                <div
-                  className="bar-fill"
-                  style={{ width: `${(count / max) * 100}%`, background: colors?.[label] || accent }}
-                />
-              </div>
-              <div className="bar-count">{count}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, onEdit, selectedIds, setSelectedIds, onClearAll }) {
+function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, profile, onEdit, selectedIds, setSelectedIds, markLeadsSent, showToast, onClearAll }) {
   const [filters, setFilters] = useState({
     search: "",
     designation: "all",
@@ -675,6 +556,39 @@ function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, onEdit, se
   const downloadFiltered = () => exportLeadsToExcel(filtered, `${currentOwner}_leads_filtered_${new Date().toISOString().slice(0, 10)}.xlsx`);
   const downloadAll = () => exportLeadsToExcel(leads, `${currentOwner}_leads_${new Date().toISOString().slice(0, 10)}.xlsx`);
 
+  const generateWorkflowFor = (sourceLeads) => {
+    if (!sourceLeads.length) return;
+    if (!profile.resumeLink || !profile.email) {
+      showToast("Set resume link + email in Profile tab first", "error");
+      return;
+    }
+    const batches = [];
+    for (let i = 0; i < sourceLeads.length; i += BATCH_SIZE) {
+      batches.push(sourceLeads.slice(i, i + BATCH_SIZE));
+    }
+    batches.forEach((batch, idx) => {
+      const wf = buildWorkflow(profile, batch, idx + 1, batches.length, currentOwner);
+      const blob = new Blob([JSON.stringify(wf, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = batches.length > 1
+        ? `${currentOwner}_batch${idx + 1}_${new Date().toISOString().slice(0, 10)}.json`
+        : `${currentOwner}_mailer_${new Date().toISOString().slice(0, 10)}.json`;
+      setTimeout(() => {
+        a.click();
+        URL.revokeObjectURL(url);
+      }, idx * 200);
+    });
+    markLeadsSent(sourceLeads.map((l) => l.emailLower));
+    showToast(
+      `${batches.length > 1 ? `${batches.length} workflows` : "Workflow"} downloaded · ${sourceLeads.length} leads marked sent`
+    );
+  };
+
+  const generateForSelected = () => generateWorkflowFor(filtered.filter((l) => selectedIds.has(l.emailLower)));
+  const generateForAll = () => generateWorkflowFor(filtered);
+
   const resetFilters = () =>
     setFilters({
       search: "", designation: "all", company: "all", location: "all",
@@ -719,8 +633,11 @@ function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, onEdit, se
             )}
           </div>
           <div className="action-cluster">
-            {selectedIds.size > 0 && (
+            {selectedIds.size > 0 ? (
               <>
+                <button className="primary big" onClick={generateForSelected}>
+                  📥 Generate workflow ({selectedIds.size})
+                </button>
                 <select className="select" defaultValue=""
                   onChange={(e) => {
                     if (e.target.value) {
@@ -733,13 +650,16 @@ function LeadsTab({ leads, pack, allLeads, setAllLeads, currentOwner, onEdit, se
                 </select>
                 <button className="danger" onClick={deleteSelected}>Delete {selectedIds.size}</button>
               </>
+            ) : (
+              filtered.length > 0 && filtered.length <= 2000 && (
+                <button className="primary" onClick={generateForAll}>
+                  📥 Workflow for {filtered.length === leads.length ? "all" : "filtered"} ({filtered.length})
+                </button>
+              )
             )}
-            <button className="primary" onClick={downloadFiltered} disabled={filtered.length === 0}>
-              Download {filtered.length === leads.length ? "all" : "filtered"} (.xlsx)
+            <button onClick={downloadFiltered} disabled={filtered.length === 0}>
+              Excel ({filtered.length === leads.length ? "all" : "filtered"})
             </button>
-            {filtered.length !== leads.length && leads.length > 0 && (
-              <button onClick={downloadAll}>Download all</button>
-            )}
             {leads.length > 0 && (
               <button className="danger" onClick={onClearAll}>Clear all</button>
             )}
@@ -870,6 +790,7 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
       if (jsonFiles.length) {
         const incoming = [];
         const sourceNames = [];
+        const seenInBatch = new Set();
         for (const f of jsonFiles) {
           sourceNames.push(f.name);
           try {
@@ -886,7 +807,10 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
                   f.name,
                   currentOwner
                 );
-                if (lead) incoming.push(lead);
+                if (!lead) continue;
+                if (seenInBatch.has(lead.emailLower)) continue;
+                seenInBatch.add(lead.emailLower);
+                incoming.push(lead);
               }
             }
           } catch {
@@ -895,23 +819,15 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
         }
         if (incoming.length) {
           const result = ingestLeads(incoming, "LinkedIn JSON");
-          if (result && result.addedLeads.length > 0) {
-            setLastImport({
-              addedLeads: result.addedLeads,
-              sourceLabel: sourceNames.join(", "),
-              sourceKind: "linkedin",
-              updated: result.updated,
-              duplicates: result.duplicatesCount,
-            });
-          } else {
-            setLastImport({
-              addedLeads: [],
-              sourceLabel: sourceNames.join(", "),
-              sourceKind: "linkedin",
-              updated: result?.updated || 0,
-              duplicates: result?.duplicatesCount || 0,
-            });
-          }
+          setLastImport({
+            workflowLeads: incoming,
+            addedCount: result?.added || 0,
+            updatedCount: result?.updated || 0,
+            sourceLabel: sourceNames.join(", "),
+            sourceKind: "linkedin",
+          });
+        } else {
+          showToast("No valid emails found in JSON", "error");
         }
       }
     },
@@ -921,32 +837,36 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
   const confirmExcelImport = () => {
     if (!importPreview || importPreview.kind !== "excel") return;
     const allNewLeads = [];
+    const seenInBatch = new Set();
     for (const sheet of importPreview.parsed.sheets) {
       const { leads: parsed } = rowsToLeads(sheet, importPreview.parsed.fileName);
-      allNewLeads.push(...parsed.map((l) => ({ ...l, owner: currentOwner })));
+      for (const l of parsed) {
+        const tagged = { ...l, owner: currentOwner };
+        if (seenInBatch.has(tagged.emailLower)) continue;
+        seenInBatch.add(tagged.emailLower);
+        allNewLeads.push(tagged);
+      }
     }
     const result = ingestLeads(allNewLeads, "Excel import");
-    if (result) {
-      setLastImport({
-        addedLeads: result.addedLeads,
-        sourceLabel: importPreview.parsed.fileName,
-        sourceKind: "excel",
-        updated: result.updated,
-        duplicates: result.duplicatesCount,
-      });
-    }
+    setLastImport({
+      workflowLeads: allNewLeads,
+      addedCount: result?.added || 0,
+      updatedCount: result?.updated || 0,
+      sourceLabel: importPreview.parsed.fileName,
+      sourceKind: "excel",
+    });
     setImportPreview(null);
   };
 
   const downloadLastImportWorkflow = () => {
-    if (!lastImport || !lastImport.addedLeads.length) return;
+    if (!lastImport || !lastImport.workflowLeads.length) return;
     if (!profile.resumeLink || !profile.email) {
       showToast("Set resume link + email in Profile tab first", "error");
       return;
     }
     const batches = [];
-    for (let i = 0; i < lastImport.addedLeads.length; i += BATCH_SIZE) {
-      batches.push(lastImport.addedLeads.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < lastImport.workflowLeads.length; i += BATCH_SIZE) {
+      batches.push(lastImport.workflowLeads.slice(i, i + BATCH_SIZE));
     }
     batches.forEach((batch, idx) => {
       const wf = buildWorkflow(profile, batch, idx + 1, batches.length, currentOwner);
@@ -962,9 +882,9 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
         URL.revokeObjectURL(url);
       }, idx * 200);
     });
-    markLeadsSent(lastImport.addedLeads.map((l) => l.emailLower));
+    markLeadsSent(lastImport.workflowLeads.map((l) => l.emailLower));
     showToast(
-      `${batches.length > 1 ? `${batches.length} workflows` : "Workflow"} downloaded · ${lastImport.addedLeads.length} leads marked sent`
+      `${batches.length > 1 ? `${batches.length} workflows` : "Workflow"} downloaded · ${lastImport.workflowLeads.length} leads marked sent`
     );
   };
 
@@ -1014,47 +934,34 @@ function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsS
         </section>
       </div>
 
-      {lastImport && (
-        lastImport.addedLeads.length > 0 ? (
-          <section className="card slide-up ready-card">
-            <div className="ready-glow" />
-            <div className="ready-content">
-              <div className="ready-header">
-                <span className="ready-emoji">✨</span>
-                <div>
-                  <h3 className="ready-title">Ready to send</h3>
-                  <p className="muted small" style={{ margin: 0 }}>
-                    {lastImport.addedLeads.length} new lead{lastImport.addedLeads.length > 1 ? "s" : ""} from{" "}
-                    <strong>{lastImport.sourceLabel}</strong>
-                    {lastImport.duplicates > 0 && ` · ${lastImport.duplicates} already in ${pack.shortName}'s database`}
-                  </p>
-                </div>
-              </div>
-              <div className="ready-actions">
-                <button className="primary big" onClick={downloadLastImportWorkflow}>
-                  📥 Download n8n workflow ({lastImport.addedLeads.length} email{lastImport.addedLeads.length > 1 ? "s" : ""})
-                </button>
-                <button onClick={() => setLastImport(null)}>Dismiss</button>
-              </div>
-              <p className="muted small" style={{ marginTop: 10, marginBottom: 0 }}>
-                Subject + HTML body pre-formatted using {pack.shortName}'s content pack. Import into n8n, connect Gmail SMTP, execute.
-              </p>
-            </div>
-          </section>
-        ) : (
-          <section className="card slide-up">
-            <div className="row-between">
+      {lastImport && lastImport.workflowLeads.length > 0 && (
+        <section className="card slide-up ready-card">
+          <div className="ready-glow" />
+          <div className="ready-content">
+            <div className="ready-header">
+              <span className="ready-emoji">✨</span>
               <div>
-                <h3 className="card-title" style={{ marginBottom: 4 }}>No new leads from {lastImport.sourceLabel}</h3>
+                <h3 className="ready-title">Workflow ready</h3>
                 <p className="muted small" style={{ margin: 0 }}>
-                  All emails were already in {pack.shortName}'s database
-                  {lastImport.duplicates > 0 && ` (${lastImport.duplicates} duplicates skipped)`}.
+                  <strong>{lastImport.workflowLeads.length}</strong> email
+                  {lastImport.workflowLeads.length > 1 ? "s" : ""} from{" "}
+                  <strong>{lastImport.sourceLabel}</strong>
+                  {lastImport.addedCount > 0 && ` · ${lastImport.addedCount} new added to ${pack.shortName}'s database`}
+                  {lastImport.updatedCount > 0 && ` · ${lastImport.updatedCount} already in database (still included)`}
                 </p>
               </div>
+            </div>
+            <div className="ready-actions">
+              <button className="primary big" onClick={downloadLastImportWorkflow}>
+                📥 Download n8n workflow ({lastImport.workflowLeads.length} email{lastImport.workflowLeads.length > 1 ? "s" : ""})
+              </button>
               <button onClick={() => setLastImport(null)}>Dismiss</button>
             </div>
-          </section>
-        )
+            <p className="muted small" style={{ marginTop: 10, marginBottom: 0 }}>
+              Workflow includes every email from this file (existing leads too — your call to send or not). Import into n8n → connect Gmail SMTP → execute.
+            </p>
+          </div>
+        </section>
       )}
 
       {importPreview && importPreview.kind === "excel" && (
@@ -1139,137 +1046,6 @@ function SheetPreview({ sheet, onMappingChange }) {
           </span>
         ))}
       </div>
-    </div>
-  );
-}
-
-function GenerateTab({ leads, allLeads, setAllLeads, pack, currentOwner, profile, generated, setGenerated, selectedIds, showToast }) {
-  const [mode, setMode] = useState("selected");
-  const [statusFilter, setStatusFilter] = useState("new");
-  const [generating, setGenerating] = useState(false);
-
-  const sourceLeads = useMemo(() => {
-    if (mode === "all") return leads;
-    if (mode === "selected") return leads.filter((l) => selectedIds.has(l.emailLower));
-    if (mode === "status") return leads.filter((l) => l.status === statusFilter);
-    return [];
-  }, [leads, mode, statusFilter, selectedIds]);
-
-  const generate = () => {
-    if (!sourceLeads.length) {
-      showToast("No leads to generate from", "error");
-      return;
-    }
-    if (!profile.resumeLink || !profile.email) {
-      showToast("Set resume link + email in Profile tab first", "error");
-      return;
-    }
-    setGenerating(true);
-    const batches = [];
-    for (let i = 0; i < sourceLeads.length; i += BATCH_SIZE) {
-      batches.push(sourceLeads.slice(i, i + BATCH_SIZE));
-    }
-    const wfs = batches.map((batch, idx) => ({
-      name: batches.length > 1 ? `Batch ${idx + 1} of ${batches.length}` : "Workflow",
-      count: batch.length,
-      blob: new Blob(
-        [JSON.stringify(buildWorkflow(profile, batch, idx + 1, batches.length, currentOwner), null, 2)],
-        { type: "application/json" }
-      ),
-      filename: batches.length > 1
-        ? `${currentOwner}_batch${idx + 1}_${new Date().toISOString().slice(0, 10)}.json`
-        : `${currentOwner}_mailer_${new Date().toISOString().slice(0, 10)}.json`,
-    }));
-    setGenerated(wfs);
-
-    const now = new Date().toISOString();
-    const targetSet = new Set(sourceLeads.map((l) => l.emailLower));
-    setAllLeads((prev) =>
-      prev.map((l) =>
-        l.owner === currentOwner && targetSet.has(l.emailLower)
-          ? { ...l, status: "queued", generatedAt: now, updatedAt: now }
-          : l
-      )
-    );
-    setGenerating(false);
-    showToast(
-      `${wfs.length} workflow${wfs.length > 1 ? "s" : ""} ready · ${sourceLeads.length} leads marked queued`
-    );
-  };
-
-  const downloadOne = (wf) => {
-    const url = URL.createObjectURL(wf.blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = wf.filename; a.click();
-    URL.revokeObjectURL(url);
-  };
-  const downloadAll = () => generated.forEach((wf, i) => setTimeout(() => downloadOne(wf), i * 150));
-
-  return (
-    <div className="fade-in">
-      <section className="card">
-        <h3 className="card-title">Generate workflow for {pack.shortName}</h3>
-        <p className="muted small">Subject lines and email bodies use {pack.shortName}'s content pack.</p>
-        <div className="radio-row">
-          <label>
-            <input type="radio" checked={mode === "selected"} onChange={() => setMode("selected")} />
-            Selected ({selectedIds.size})
-          </label>
-          <label>
-            <input type="radio" checked={mode === "status"} onChange={() => setMode("status")} />
-            By status
-          </label>
-          <label>
-            <input type="radio" checked={mode === "all"} onChange={() => setMode("all")} />
-            All ({leads.length})
-          </label>
-        </div>
-
-        {mode === "status" && (
-          <div style={{ marginBottom: 12 }}>
-            <select className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              {STATUS_LIST.map((s) => (
-                <option key={s} value={s}>
-                  {s} ({leads.filter((l) => l.status === s).length})
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        <div className="row-between">
-          <div className="muted small">
-            <strong>{sourceLeads.length}</strong> leads selected for generation
-            {sourceLeads.length > BATCH_SIZE && ` · ${Math.ceil(sourceLeads.length / BATCH_SIZE)} batches`}
-          </div>
-          <button className="primary big" disabled={generating || sourceLeads.length === 0} onClick={generate}>
-            {generating ? "Generating…" : `Generate workflow (${sourceLeads.length})`}
-          </button>
-        </div>
-      </section>
-
-      {generated.length > 0 && (
-        <section className="card slide-up">
-          <div className="row-between">
-            <h3 className="card-title">Ready to import into n8n</h3>
-            {generated.length > 1 && <button onClick={downloadAll}>Download all</button>}
-          </div>
-          <div className="generated-list">
-            {generated.map((wf, i) => (
-              <div key={i} className="generated-item">
-                <div>
-                  <div className="generated-name">{wf.name}</div>
-                  <div className="generated-meta">{wf.count} emails · {wf.filename}</div>
-                </div>
-                <button className="primary" onClick={() => downloadOne(wf)}>Download</button>
-              </div>
-            ))}
-          </div>
-          <p className="footer-note">
-            Targeted leads marked <strong>queued</strong>. Update to <strong>sent</strong> after n8n fires.
-          </p>
-        </section>
-      )}
     </div>
   );
 }
