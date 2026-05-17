@@ -1,11 +1,10 @@
 import { extractRole, cleanName } from "./parsers.js";
 import { getPack, DEFAULT_OWNER } from "./contentPacks/index.js";
 
-export const STATUS_LIST = ["new", "queued", "sent", "responded", "rejected"];
+export const STATUS_LIST = ["new", "sent", "responded", "rejected"];
 
 export const STATUS_COLORS = {
   new: "#888780",
-  queued: "#378ADD",
   sent: "#1D9E75",
   responded: "#7F77DD",
   rejected: "#D85A30",
@@ -50,6 +49,7 @@ export function normalizeLead(input, ownerId) {
   merged.notes = String(merged.notes || "").trim();
   merged.role = String(merged.role || "").trim();
   merged.categories = Array.isArray(merged.categories) ? merged.categories : [];
+  if (merged.status === "queued") merged.status = "sent";
   if (!STATUS_LIST.includes(merged.status)) merged.status = "new";
   if (!merged.addedAt) merged.addedAt = new Date().toISOString();
   if (!merged.updatedAt) merged.updatedAt = merged.addedAt;
@@ -78,7 +78,7 @@ export function mergeLeads(existing, incoming, ownerId) {
     const norm = normalizeLead(l, ownerId);
     if (norm.emailLower) byEmail.set(norm.emailLower, norm);
   }
-  let added = 0;
+  const addedLeads = [];
   let merged = 0;
   const duplicates = [];
   const now = new Date().toISOString();
@@ -88,7 +88,7 @@ export function mergeLeads(existing, incoming, ownerId) {
     const prev = byEmail.get(lead.emailLower);
     if (!prev) {
       byEmail.set(lead.emailLower, lead);
-      added++;
+      addedLeads.push(lead);
     } else {
       const next = { ...prev };
       for (const k of [
@@ -112,7 +112,13 @@ export function mergeLeads(existing, incoming, ownerId) {
       duplicates.push(lead);
     }
   }
-  return { leads: [...byEmail.values()], added, merged, duplicates };
+  return {
+    leads: [...byEmail.values()],
+    added: addedLeads.length,
+    addedLeads,
+    merged,
+    duplicates,
+  };
 }
 
 export function uniqueValues(leads, key) {
@@ -154,7 +160,7 @@ export function migrateV2HistoryToLeads(v2History) {
     lead.name = h.recruiter || "";
     lead.role = h.role || "";
     lead.categories = h.categories || [];
-    lead.status = h.generatedAt ? "queued" : "new";
+    lead.status = h.generatedAt ? "sent" : "new";
     lead.source = h.legacy ? "legacy" : "linkedin";
     lead.sourceFile = h.sourceFile || "";
     lead.addedAt = h.addedAt || new Date().toISOString();

@@ -200,7 +200,7 @@ export default function App() {
     const ownLeads = allLeads.filter((l) => l.owner === currentOwner);
     const otherLeads = allLeads.filter((l) => l.owner !== currentOwner);
     const tagged = incoming.map((l) => ({ ...l, owner: currentOwner }));
-    const { leads: merged, added, merged: updated, duplicates } = mergeLeads(
+    const { leads: merged, added, addedLeads, merged: updated, duplicates } = mergeLeads(
       ownLeads,
       tagged,
       currentOwner
@@ -208,6 +208,20 @@ export default function App() {
     setAllLeads([...otherLeads, ...merged]);
     showToast(
       `${sourceLabel}: ${added} new · ${updated} updated · ${duplicates.length} merged`
+    );
+    return { added, addedLeads, updated, duplicatesCount: duplicates.length };
+  };
+
+  const markLeadsSent = (emailLowers) => {
+    if (!emailLowers.length) return;
+    const targetSet = new Set(emailLowers);
+    const now = new Date().toISOString();
+    setAllLeads((prev) =>
+      prev.map((l) =>
+        l.owner === currentOwner && targetSet.has(l.emailLower)
+          ? { ...l, status: "sent", generatedAt: l.generatedAt || now, updatedAt: now }
+          : l
+      )
     );
   };
 
@@ -336,7 +350,9 @@ export default function App() {
             leads={leads}
             pack={pack}
             currentOwner={currentOwner}
+            profile={profile}
             ingestLeads={ingestLeads}
+            markLeadsSent={markLeadsSent}
             importPreview={importPreview}
             setImportPreview={setImportPreview}
             showToast={showToast}
@@ -829,8 +845,9 @@ const LeadRow = memo(function LeadRow({ lead, pack, selected, onToggle, onEdit }
   );
 });
 
-function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setImportPreview, showToast }) {
+function ImportTab({ leads, pack, currentOwner, profile, ingestLeads, markLeadsSent, importPreview, setImportPreview, showToast }) {
   const [dragging, setDragging] = useState(false);
+  const [lastImport, setLastImport] = useState(null);
   const jsonRef = useRef();
   const excelRef = useRef();
 
@@ -852,7 +869,9 @@ function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setI
 
       if (jsonFiles.length) {
         const incoming = [];
+        const sourceNames = [];
         for (const f of jsonFiles) {
+          sourceNames.push(f.name);
           try {
             const text = await f.text();
             const data = JSON.parse(text);
@@ -875,7 +894,24 @@ function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setI
           }
         }
         if (incoming.length) {
-          ingestLeads(incoming, "LinkedIn JSON");
+          const result = ingestLeads(incoming, "LinkedIn JSON");
+          if (result && result.addedLeads.length > 0) {
+            setLastImport({
+              addedLeads: result.addedLeads,
+              sourceLabel: sourceNames.join(", "),
+              sourceKind: "linkedin",
+              updated: result.updated,
+              duplicates: result.duplicatesCount,
+            });
+          } else {
+            setLastImport({
+              addedLeads: [],
+              sourceLabel: sourceNames.join(", "),
+              sourceKind: "linkedin",
+              updated: result?.updated || 0,
+              duplicates: result?.duplicatesCount || 0,
+            });
+          }
         }
       }
     },
@@ -884,13 +920,52 @@ function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setI
 
   const confirmExcelImport = () => {
     if (!importPreview || importPreview.kind !== "excel") return;
-    const allLeads = [];
+    const allNewLeads = [];
     for (const sheet of importPreview.parsed.sheets) {
       const { leads: parsed } = rowsToLeads(sheet, importPreview.parsed.fileName);
-      allLeads.push(...parsed.map((l) => ({ ...l, owner: currentOwner })));
+      allNewLeads.push(...parsed.map((l) => ({ ...l, owner: currentOwner })));
     }
-    ingestLeads(allLeads, "Excel import");
+    const result = ingestLeads(allNewLeads, "Excel import");
+    if (result) {
+      setLastImport({
+        addedLeads: result.addedLeads,
+        sourceLabel: importPreview.parsed.fileName,
+        sourceKind: "excel",
+        updated: result.updated,
+        duplicates: result.duplicatesCount,
+      });
+    }
     setImportPreview(null);
+  };
+
+  const downloadLastImportWorkflow = () => {
+    if (!lastImport || !lastImport.addedLeads.length) return;
+    if (!profile.resumeLink || !profile.email) {
+      showToast("Set resume link + email in Profile tab first", "error");
+      return;
+    }
+    const batches = [];
+    for (let i = 0; i < lastImport.addedLeads.length; i += BATCH_SIZE) {
+      batches.push(lastImport.addedLeads.slice(i, i + BATCH_SIZE));
+    }
+    batches.forEach((batch, idx) => {
+      const wf = buildWorkflow(profile, batch, idx + 1, batches.length, currentOwner);
+      const blob = new Blob([JSON.stringify(wf, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = batches.length > 1
+        ? `${currentOwner}_batch${idx + 1}_${new Date().toISOString().slice(0, 10)}.json`
+        : `${currentOwner}_mailer_${new Date().toISOString().slice(0, 10)}.json`;
+      setTimeout(() => {
+        a.click();
+        URL.revokeObjectURL(url);
+      }, idx * 200);
+    });
+    markLeadsSent(lastImport.addedLeads.map((l) => l.emailLower));
+    showToast(
+      `${batches.length > 1 ? `${batches.length} workflows` : "Workflow"} downloaded · ${lastImport.addedLeads.length} leads marked sent`
+    );
   };
 
   return (
@@ -938,6 +1013,49 @@ function ImportTab({ leads, pack, currentOwner, ingestLeads, importPreview, setI
             }} />
         </section>
       </div>
+
+      {lastImport && (
+        lastImport.addedLeads.length > 0 ? (
+          <section className="card slide-up ready-card">
+            <div className="ready-glow" />
+            <div className="ready-content">
+              <div className="ready-header">
+                <span className="ready-emoji">✨</span>
+                <div>
+                  <h3 className="ready-title">Ready to send</h3>
+                  <p className="muted small" style={{ margin: 0 }}>
+                    {lastImport.addedLeads.length} new lead{lastImport.addedLeads.length > 1 ? "s" : ""} from{" "}
+                    <strong>{lastImport.sourceLabel}</strong>
+                    {lastImport.duplicates > 0 && ` · ${lastImport.duplicates} already in ${pack.shortName}'s database`}
+                  </p>
+                </div>
+              </div>
+              <div className="ready-actions">
+                <button className="primary big" onClick={downloadLastImportWorkflow}>
+                  📥 Download n8n workflow ({lastImport.addedLeads.length} email{lastImport.addedLeads.length > 1 ? "s" : ""})
+                </button>
+                <button onClick={() => setLastImport(null)}>Dismiss</button>
+              </div>
+              <p className="muted small" style={{ marginTop: 10, marginBottom: 0 }}>
+                Subject + HTML body pre-formatted using {pack.shortName}'s content pack. Import into n8n, connect Gmail SMTP, execute.
+              </p>
+            </div>
+          </section>
+        ) : (
+          <section className="card slide-up">
+            <div className="row-between">
+              <div>
+                <h3 className="card-title" style={{ marginBottom: 4 }}>No new leads from {lastImport.sourceLabel}</h3>
+                <p className="muted small" style={{ margin: 0 }}>
+                  All emails were already in {pack.shortName}'s database
+                  {lastImport.duplicates > 0 && ` (${lastImport.duplicates} duplicates skipped)`}.
+                </p>
+              </div>
+              <button onClick={() => setLastImport(null)}>Dismiss</button>
+            </div>
+          </section>
+        )
+      )}
 
       {importPreview && importPreview.kind === "excel" && (
         <section className="card slide-up">

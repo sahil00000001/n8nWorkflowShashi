@@ -859,6 +859,50 @@ textarea { font-family: inherit; line-height: 1.5; }
   font-size: 11px;
 }
 
+/* READY TO SEND CARD */
+.ready-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(74, 58, 255, 0.25);
+  background: linear-gradient(135deg, rgba(74, 58, 255, 0.04) 0%, rgba(29, 158, 117, 0.04) 100%);
+}
+.ready-glow {
+  position: absolute;
+  inset: -2px;
+  background: linear-gradient(135deg, rgba(74, 58, 255, 0.18), rgba(29, 158, 117, 0.14));
+  filter: blur(28px);
+  z-index: 0;
+  animation: readyPulse 4s ease-in-out infinite;
+}
+@keyframes readyPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.85; }
+}
+.ready-content { position: relative; z-index: 1; }
+.ready-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.ready-emoji {
+  font-size: 38px;
+  line-height: 1;
+  animation: bob 2.4s ease-in-out infinite;
+}
+.ready-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  letter-spacing: -0.01em;
+}
+.ready-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .loading-screen {
   min-height: 80vh;
   display: flex;
